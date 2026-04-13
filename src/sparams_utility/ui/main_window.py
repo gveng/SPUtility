@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import resources
 import json
 from datetime import datetime
 
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QMdiArea,
     QMdiSubWindow,
     QMessageBox,
+    QTextBrowser,
     QVBoxLayout,
 )
 
@@ -67,6 +69,7 @@ class MainWindow(QMainWindow):
 
         # ── Help ──────────────────────────────────────────────────────────
         help_menu = self.menuBar().addMenu("Help")
+        help_menu.addAction("User Guide", self._show_help)
         help_menu.addAction("About", self._show_about)
 
         self._state.files_changed.connect(self._rebuild_tables_menu)
@@ -299,6 +302,32 @@ class MainWindow(QMainWindow):
             sub.showNormal()
 
     # ── Help > About ──────────────────────────────────────────────────────
+
+    def _show_help(self) -> None:
+        try:
+            help_html = resources.files("sparams_utility.resources.help").joinpath(
+                "help_en.html"
+            ).read_text(encoding="utf-8")
+        except (FileNotFoundError, ModuleNotFoundError, OSError) as exc:
+            QMessageBox.warning(
+                self,
+                "Help unavailable",
+                f"Could not load the user guide:\n{exc}",
+            )
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"{pkg.__app_name__} User Guide")
+        dlg.resize(820, 640)
+
+        layout = QVBoxLayout(dlg)
+        browser = QTextBrowser(dlg)
+        browser.setOpenExternalLinks(True)
+        browser.setReadOnly(True)
+        browser.setHtml(help_html)
+        layout.addWidget(browser)
+
+        dlg.exec()
 
     def _show_about(self) -> None:
         dlg = QDialog(self)

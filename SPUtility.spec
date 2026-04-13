@@ -3,13 +3,14 @@ from PyInstaller.utils.hooks import collect_submodules
 
 hiddenimports = []
 hiddenimports += collect_submodules('sparams_utility')
+datas = [('src/sparams_utility/resources/help/help_en.html', 'sparams_utility/resources/help')]
 
 
 a = Analysis(
     ['app.py'],
     pathex=['src'],
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SPUtility User Guide</title>
+  <style>
+    body {
+      font-family: Segoe UI, Arial, sans-serif;
+      line-height: 1.5;
+      margin: 24px auto;
+      max-width: 900px;
+      color: #222;
+    }
+    h1, h2 {
+      color: #163a5f;
+    }
+    code {
+      background: #f3f5f7;
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+    ul {
+      padding-left: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>SPUtility User Guide</h1>
+  <p>
+    SPUtility is a desktop viewer for Touchstone S-parameter files. It lets you load one or
+    more files, inspect tables, compare traces in independent plot windows, and save a full
+    working session as a project.
+  </p>
+
+  <h2>What You Can Do</h2>
+  <ul>
+    <li>Open Touchstone files such as <code>.s1p</code>, <code>.s2p</code>, <code>.s4p</code>, and <code>.ts</code>.</li>
+    <li>Open raw data tables and magnitude tables for each loaded file.</li>
+    <li>Create multiple independent graph windows to compare different trace selections.</li>
+    <li>Select which S-parameters are plotted for each file.</li>
+    <li>Edit the legend label used for each loaded file in every plot window.</li>
+    <li>Change plot settings for linear or logarithmic axes and manual or automatic ranges.</li>
+    <li>Save and reopen projects with loaded files, graph selections, labels, and window sizes.</li>
+    <li>Arrange internal windows using tile, cascade, minimize, restore, or resize-all commands.</li>
+  </ul>
+
+  <h2>Main Workflow</h2>
+  <ol>
+    <li>Use <b>File &gt; Open File</b> to load one or more Touchstone files.</li>
+    <li>Use the <b>Tables</b> menu to inspect raw or magnitude data for each loaded file.</li>
+    <li>Use <b>Charts &gt; Open plot window</b> to create a graph window.</li>
+    <li>In each graph window, enable the desired S-parameters using the checkboxes.</li>
+    <li>Edit the <b>Legend label</b> column if you want custom names in the graph legend.</li>
+    <li>Use <b>Settings &gt; Plot settings</b> inside a graph window to configure axis behavior.</li>
+    <li>Use <b>File &gt; Save Project</b> to store your current workspace in a JSON project file.</li>
+  </ol>
+
+  <h2>Plot Windows</h2>
+  <p>Each plot window is independent. This means you can:</p>
+  <ul>
+    <li>Open several graph windows at the same time.</li>
+    <li>Choose different trace combinations in each window.</li>
+    <li>Use different legend labels per plot window.</li>
+    <li>Resize windows independently or align them using the <b>View</b> menu commands.</li>
+  </ul>
+
+  <h2>Project Files</h2>
+  <p>A saved project stores the working session, including:</p>
+  <ul>
+    <li>The list of loaded file paths.</li>
+    <li>All open graph windows.</li>
+    <li>Selected parameters in each graph window.</li>
+    <li>Legend labels for each file.</li>
+    <li>Plot settings and graph window sizes.</li>
+  </ul>
+
+  <h2>View Menu</h2>
+  <ul>
+    <li><b>Tile windows</b>: arranges sub-windows in a tiled layout.</li>
+    <li><b>Cascade windows</b>: stacks sub-windows in cascade order.</li>
+    <li><b>Minimize all</b>: minimizes every open sub-window.</li>
+    <li><b>Restore all</b>: restores all minimized sub-windows.</li>
+    <li><b>Resize all graph with last graph window</b>: applies the current graph layout to the other graph windows.</li>
+    <li><b>Close all</b>: closes every open sub-window.</li>
+  </ul>
+
+  <h2>Notes</h2>
+  <ul>
+    <li>If a saved project references files that no longer exist, the project opens with warnings.</li>
+    <li>Graph windows reflect only the traces you selected in that specific window.</li>
+    <li>You are prompted before closing the application if the current project has unsaved changes.</li>
+  </ul>
+</body>
+</html>
