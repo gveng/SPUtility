@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List, Set
 
 import numpy as np
@@ -280,6 +281,50 @@ class PlotWindow(QMainWindow):
             vb.enableAutoRange(axis=vb.YAxis)
         elif self._settings.y_min is not None and self._settings.y_max is not None:
             vb.setYRange(self._settings.y_min, self._settings.y_max, padding=0.0)
+
+    def apply_project_state(self, state: dict) -> None:
+        settings = state.get("plot_settings", {})
+        self._settings = PlotSettings(
+            x_log=bool(settings.get("x_log", False)),
+            y_log=bool(settings.get("y_log", False)),
+            x_autorange=bool(settings.get("x_autorange", True)),
+            y_autorange=bool(settings.get("y_autorange", True)),
+            x_min=settings.get("x_min"),
+            x_max=settings.get("x_max"),
+            y_min=settings.get("y_min"),
+            y_max=settings.get("y_max"),
+        )
+
+        loaded_by_path = {
+            str(item.path.resolve()): item.file_id
+            for item in self._state.get_loaded_files()
+        }
+
+        restored_labels: Dict[str, str] = {}
+        restored_traces: Dict[str, Set[str]] = {}
+
+        for file_entry in state.get("files", []):
+            raw_path = file_entry.get("file_path")
+            if not raw_path:
+                continue
+            file_id = loaded_by_path.get(str(Path(raw_path).resolve()))
+            if file_id is None:
+                continue
+
+            label = file_entry.get("legend_label")
+            if isinstance(label, str) and label:
+                restored_labels[file_id] = label
+
+            selected = file_entry.get("selected_parameters", [])
+            if isinstance(selected, list):
+                restored_traces[file_id] = {str(x) for x in selected}
+
+        if restored_labels:
+            self._labels.update(restored_labels)
+        if restored_traces:
+            self._selected_traces.update(restored_traces)
+
+        self.refresh_from_state()
 
     def export_project_state(self) -> dict:
         per_file = []

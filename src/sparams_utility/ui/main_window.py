@@ -40,6 +40,7 @@ class MainWindow(QMainWindow):
         # ── File ──────────────────────────────────────────────────────────
         file_menu = self.menuBar().addMenu("File")
         file_menu.addAction("Open File", self._open_files)
+        file_menu.addAction("Open Project", self._open_project)
         file_menu.addAction("Save Project", self._save_project)
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
@@ -132,6 +133,62 @@ class MainWindow(QMainWindow):
             return
 
         QMessageBox.information(self, "Project saved", f"Project saved to:\n{file_path}")
+
+    def _open_project(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Project",
+            "",
+            "SPUtility Project (*.json);;All files (*)",
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as fp:
+                payload = json.load(fp)
+        except (OSError, json.JSONDecodeError) as exc:
+            QMessageBox.critical(self, "Open failed", f"Could not open project:\n{exc}")
+            return
+
+        raw_files = payload.get("loaded_files", [])
+        file_paths: list[str] = []
+        for item in raw_files:
+            path = item.get("file_path") if isinstance(item, dict) else None
+            if isinstance(path, str) and path:
+                file_paths.append(path)
+
+        # Reset current workspace state and windows before loading project.
+        self._mdi.closeAllSubWindows()
+        self._state.clear_files()
+        self._plot_counter = 0
+
+        _, errors = self._state.load_files(file_paths)
+
+        restored = 0
+        for plot_state in payload.get("plots", []):
+            if not isinstance(plot_state, dict):
+                continue
+            self._plot_counter += 1
+            plot_win = PlotWindow(self._state, window_number=self._plot_counter)
+            sub = self._mdi.addSubWindow(plot_win)
+            sub.resize(1200, 720)
+            plot_win.apply_project_state(plot_state)
+            plot_win.show()
+            restored += 1
+
+        if errors:
+            QMessageBox.warning(
+                self,
+                "Project loaded with warnings",
+                "Some files could not be loaded:\n" + "\n".join(errors),
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Project loaded",
+                f"Loaded {len(file_paths)} file(s) and restored {restored} plot window(s).",
+            )
 
     # ── Tables menu ───────────────────────────────────────────────────────
 
