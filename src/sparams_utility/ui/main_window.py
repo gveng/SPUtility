@@ -240,12 +240,30 @@ class MainWindow(QMainWindow):
     def _open_plot_window(self) -> None:
         self._plot_counter += 1
         plot_win = PlotWindow(self._state, window_number=self._plot_counter)
+        plot_win.resize_all_graphs_requested.connect(
+            lambda state, source=plot_win: self._resize_all_graph_windows(source, state)
+        )
         plot_win.project_modified.connect(self._mark_project_dirty)
         sub = self._mdi.addSubWindow(plot_win)
         sub.resize(1200, 720)
         plot_win.show()
         self._mdi.setActiveSubWindow(sub)
         self._mark_project_dirty()
+
+    def _resize_all_graph_windows(self, source: PlotWindow, state: dict) -> None:
+        source_sub = source.parentWidget()
+        source_size = source_sub.size() if isinstance(source_sub, QMdiSubWindow) else None
+
+        for sub in self._mdi.subWindowList():
+            widget = sub.widget()
+            if not isinstance(widget, PlotWindow):
+                continue
+            if widget is source:
+                continue
+
+            if source_size is not None:
+                sub.resize(source_size)
+            widget.apply_graph_layout_state(state)
 
     # ── View helpers ──────────────────────────────────────────────────────
 
