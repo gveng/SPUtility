@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import Dict, List, Set
 
 import numpy as np
@@ -49,7 +48,6 @@ class PlotWindow(QMainWindow):
         self._selected_traces: Dict[str, Set[str]] = {}
         self._labels: Dict[str, str] = {}          # file_id -> legend label
         self._row_to_fid: List[str] = []            # row index -> file_id
-        self._enabled_files: Set[str] = set()       # file_ids active in this window
         self._settings = PlotSettings()
 
         settings_menu = self.menuBar().addMenu("Settings")
@@ -77,23 +75,19 @@ class PlotWindow(QMainWindow):
         self._legend = self._plot_widget.addLegend(offset=(10, 10))
 
         # ── Selection table ───────────────────────────────────────────────
-        # Col 0 = Enable | Col 1 = File (read-only) | Col 2 = Label (editable) | Col 3..N = traces
-        self._selection_table = QTableWidget(0, 3)
-        self._selection_table.setHorizontalHeaderLabels(["On", "File", "Legend label"])
+        # Col 0 = File (read-only) | Col 1 = Label (editable) | Col 2..N = traces
+        self._selection_table = QTableWidget(0, 2)
+        self._selection_table.setHorizontalHeaderLabels(["File", "Legend label"])
         self._selection_table.verticalHeader().setVisible(False)
         self._selection_table.setAlternatingRowColors(True)
         self._selection_table.setSelectionMode(QTableWidget.NoSelection)
         self._selection_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.Fixed
-        )
-        self._selection_table.setColumnWidth(0, 32)
-        self._selection_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeToContents
+            0, QHeaderView.ResizeToContents
         )
         self._selection_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.Interactive
+            1, QHeaderView.Interactive
         )
-        self._selection_table.setColumnWidth(2, 200)
+        self._selection_table.setColumnWidth(1, 200)
 
         tbl_font = QFont()
         tbl_font.setPointSize(_TABLE_FONT_PT)
@@ -129,8 +123,6 @@ class PlotWindow(QMainWindow):
             fid: t for fid, t in self._selected_traces.items() if fid in valid_ids
         }
 
-        self._enabled_files = {fid for fid in self._enabled_files if fid in valid_ids}
-
         # Collect unique trace names in insertion order
         all_traces: List[str] = []
         seen: Set[str] = set()
@@ -141,8 +133,8 @@ class PlotWindow(QMainWindow):
                     seen.add(trace)
 
         n_trace_cols = len(all_traces)
-        n_cols = 3 + n_trace_cols          # On | File | Label | traces…
-        headers = ["On", "File", "Legend label"] + all_traces
+        n_cols = 2 + n_trace_cols          # File | Label | traces…
+        headers = ["File", "Legend label"] + all_traces
 
         self._selection_table.cellChanged.disconnect(self._on_cell_changed)
         self._selection_table.blockSignals(True)
@@ -156,36 +148,22 @@ class PlotWindow(QMainWindow):
         for row, loaded in enumerate(loaded_files):
             self._row_to_fid.append(loaded.file_id)
 
-            # Col 0: enable checkbox (centered)
-            is_enabled = loaded.file_id in self._enabled_files
-            en_cb = QCheckBox()
-            en_cb.setChecked(is_enabled)
-            en_cell = QWidget()
-            en_layout = QHBoxLayout(en_cell)
-            en_layout.addWidget(en_cb)
-            en_layout.setAlignment(en_cb, Qt.AlignCenter)
-            en_layout.setContentsMargins(0, 0, 0, 0)
-            en_cb.toggled.connect(
-                lambda checked, fid=loaded.file_id: self._on_file_enabled(fid, checked)
-            )
-            self._selection_table.setCellWidget(row, 0, en_cell)
-
-            # Col 1: file name (not editable)
+            # Col 0: file name (not editable)
             file_item = QTableWidgetItem(loaded.display_name)
             file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
-            self._selection_table.setItem(row, 1, file_item)
+            self._selection_table.setItem(row, 0, file_item)
 
-            # Col 2: legend label (editable, default = file name)
+            # Col 1: legend label (editable, default = file name)
             label_text = self._labels.get(loaded.file_id, loaded.display_name)
             self._labels.setdefault(loaded.file_id, loaded.display_name)
             label_item = QTableWidgetItem(label_text)
-            self._selection_table.setItem(row, 2, label_item)
+            self._selection_table.setItem(row, 1, label_item)
 
-            # Col 3..N: checkboxes for each trace
+            # Col 2..N: checkboxes for each trace
             chosen = self._selected_traces.setdefault(loaded.file_id, set())
             file_traces = set(loaded.data.trace_names)
 
-            for col_idx, trace in enumerate(all_traces, start=3):
+            for col_idx, trace in enumerate(all_traces, start=2):
                 if trace in file_traces:
                     cb = QCheckBox()
                     cb.setChecked(trace in chosen)
@@ -206,7 +184,7 @@ class PlotWindow(QMainWindow):
         self._selection_table.resizeColumnToContents(0)
         header = self._selection_table.horizontalHeader()
         # Set compact fixed width for all trace checkbox columns
-        for col_idx in range(3, 3 + len(all_traces)):
+        for col_idx in range(2, 2 + len(all_traces)):
             header.setSectionResizeMode(col_idx, QHeaderView.Fixed)
             self._selection_table.setColumnWidth(col_idx, 38)
         self._selection_table.blockSignals(False)
@@ -216,22 +194,15 @@ class PlotWindow(QMainWindow):
     # ── Signal handlers ───────────────────────────────────────────────────
 
     def _on_cell_changed(self, row: int, col: int) -> None:
-        if col != 2:
+        if col != 1:
             return
         if row >= len(self._row_to_fid):
             return
         fid = self._row_to_fid[row]
-        item = self._selection_table.item(row, 2)
+        item = self._selection_table.item(row, 1)
         if item is not None:
             self._labels[fid] = item.text()
             self._refresh_plot()
-
-    def _on_file_enabled(self, file_id: str, checked: bool) -> None:
-        if checked:
-            self._enabled_files.add(file_id)
-        else:
-            self._enabled_files.discard(file_id)
-        self._refresh_plot()
 
     def _on_checkbox_changed(self, file_id: str, trace: str, checked: bool) -> None:
         chosen = self._selected_traces.setdefault(file_id, set())
@@ -257,8 +228,6 @@ class PlotWindow(QMainWindow):
 
         color_index = 0
         for loaded in self._state.get_loaded_files():
-            if loaded.file_id not in self._enabled_files:
-                continue
             selected = sorted(self._selected_traces.get(loaded.file_id, set()))
             if not selected:
                 continue
