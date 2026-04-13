@@ -7,6 +7,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QLabel,
@@ -30,6 +31,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{pkg.__app_name__}  {pkg.__version__}")
         self.resize(1400, 900)
+        app = QApplication.instance()
+        if app is not None:
+            self.setWindowIcon(app.windowIcon())
 
         self._state = state
         self._plot_counter: int = 0

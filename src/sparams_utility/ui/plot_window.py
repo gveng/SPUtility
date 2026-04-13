@@ -8,6 +8,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QHBoxLayout,
     QHeaderView,
@@ -47,6 +48,9 @@ class PlotWindow(QMainWindow):
         self.window_number = window_number
         self.setWindowTitle(f"S-Parameter Plots #{window_number}")
         self.resize(1250, 800)
+        app = QApplication.instance()
+        if app is not None:
+            self.setWindowIcon(app.windowIcon())
 
         self._state = state
         self._selected_traces: Dict[str, Set[str]] = {}

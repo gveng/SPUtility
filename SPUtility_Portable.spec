@@ -1,9 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+
 from PyInstaller.utils.hooks import collect_submodules
+
+PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 
 hiddenimports = []
 hiddenimports += collect_submodules('sparams_utility')
-datas = [('src/sparams_utility/resources/help/help_en.html', 'sparams_utility/resources/help')]
+datas = [
+    (os.path.join(PROJECT_ROOT, 'src', 'sparams_utility', 'resources', 'help', 'help_en.html'), 'sparams_utility/resources/help'),
+    (os.path.join(PROJECT_ROOT, 'Images', 'Splash_Screen.png'), 'Images'),
+    (os.path.join(PROJECT_ROOT, 'Images', 'Icon.png'), 'Images'),
+]
 
 
 a = Analysis(
@@ -35,6 +43,7 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
+    icon=os.path.join(PROJECT_ROOT, 'Images', 'Icon.png'),
     codesign_identity=None,
     entitlements_file=None,
 )
