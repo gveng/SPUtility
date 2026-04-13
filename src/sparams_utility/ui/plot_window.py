@@ -69,7 +69,9 @@ class PlotWindow(QMainWindow):
             ax.setTextPen(_AXIS_PEN)
         pi.getAxis("top").setStyle(showValues=False)
         pi.getAxis("right").setStyle(showValues=False)
-        pi.showAxes(True, showValues=(True, True, False, False))
+        # showValues order: (left, top, right, bottom)
+        # left=True → Magnitude [dB], bottom=True → Frequency [Hz]
+        pi.showAxes(True, showValues=(True, False, False, True))
 
         self._legend = self._plot_widget.addLegend(offset=(10, 10))
 
@@ -181,6 +183,11 @@ class PlotWindow(QMainWindow):
                     self._selection_table.setCellWidget(row, col_idx, cell)
 
         self._selection_table.resizeColumnToContents(0)
+        # Set compact fixed width for all trace checkbox columns
+        header = self._selection_table.horizontalHeader()
+        for col_idx in range(2, 2 + len(all_traces)):
+            header.setSectionResizeMode(col_idx, QHeaderView.Fixed)
+            self._selection_table.setColumnWidth(col_idx, 38)
         self._selection_table.blockSignals(False)
         self._selection_table.cellChanged.connect(self._on_cell_changed)
         self._refresh_plot()
