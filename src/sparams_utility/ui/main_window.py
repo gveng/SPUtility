@@ -120,7 +120,9 @@ class MainWindow(QMainWindow):
         for sub in self._mdi.subWindowList():
             widget = sub.widget()
             if isinstance(widget, PlotWindow):
-                plot_windows.append(widget.export_project_state())
+                state = widget.export_project_state()
+                state["window_size"] = [sub.width(), sub.height()]
+                plot_windows.append(state)
 
         payload = {
             "app_name": pkg.__app_name__,
@@ -179,7 +181,15 @@ class MainWindow(QMainWindow):
             self._plot_counter += 1
             plot_win = PlotWindow(self._state, window_number=self._plot_counter)
             sub = self._mdi.addSubWindow(plot_win)
-            sub.resize(1200, 720)
+            window_size = plot_state.get("window_size")
+            if (
+                isinstance(window_size, list)
+                and len(window_size) == 2
+                and all(isinstance(v, int) for v in window_size)
+            ):
+                sub.resize(window_size[0], window_size[1])
+            else:
+                sub.resize(1200, 720)
             plot_win.apply_project_state(plot_state)
             plot_win.show()
             restored += 1
