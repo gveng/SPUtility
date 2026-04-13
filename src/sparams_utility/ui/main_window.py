@@ -26,7 +26,7 @@ class MainWindow(QMainWindow):
         self.resize(1400, 900)
 
         self._state = state
-        self._plot_subwin: QMdiSubWindow | None = None
+        self._plot_counter: int = 0
 
         # MDI area as central widget — all sub-windows live here
         self._mdi = QMdiArea()
@@ -128,12 +128,12 @@ class MainWindow(QMainWindow):
     # ── Plot window ───────────────────────────────────────────────────────
 
     def _open_plot_window(self) -> None:
-        if self._plot_subwin is None or self._plot_subwin not in self._mdi.subWindowList():
-            plot_win = PlotWindow(self._state)
-            self._plot_subwin = self._mdi.addSubWindow(plot_win)
-            self._plot_subwin.resize(1200, 720)
-        self._plot_subwin.showNormal()
-        self._mdi.setActiveSubWindow(self._plot_subwin)
+        self._plot_counter += 1
+        plot_win = PlotWindow(self._state, window_number=self._plot_counter)
+        sub = self._mdi.addSubWindow(plot_win)
+        sub.resize(1200, 720)
+        plot_win.show()
+        self._mdi.setActiveSubWindow(sub)
 
     # ── View helpers ──────────────────────────────────────────────────────
 
