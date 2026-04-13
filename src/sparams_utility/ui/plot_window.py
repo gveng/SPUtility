@@ -6,6 +6,7 @@ from typing import Dict, List, Set
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -20,6 +21,9 @@ from PySide6.QtWidgets import (
 
 from sparams_utility.models.state import AppState
 from sparams_utility.ui.plot_settings_dialog import PlotSettings, PlotSettingsDialog
+
+_AXIS_PEN = pg.mkPen(color="#222222", width=1)
+_TABLE_FONT_PT = 8
 
 
 class PlotWindow(QMainWindow):
@@ -43,43 +47,61 @@ class PlotWindow(QMainWindow):
 
         self._state = state
         self._selected_traces: Dict[str, Set[str]] = {}
+        self._labels: Dict[str, str] = {}          # file_id -> legend label
+        self._row_to_fid: List[str] = []            # row index -> file_id
         self._settings = PlotSettings()
 
         settings_menu = self.menuBar().addMenu("Settings")
         settings_action = settings_menu.addAction("Plot settings")
         settings_action.triggered.connect(self._open_settings_dialog)
 
+        # ── Plot widget ───────────────────────────────────────────────────
         self._plot_widget = pg.PlotWidget()
         self._plot_widget.setBackground("w")
         self._plot_widget.showGrid(x=True, y=True, alpha=0.25)
         self._plot_widget.setLabel("bottom", "Frequency", units="Hz")
         self._plot_widget.setLabel("left", "Magnitude", units="dB")
-        self._plot_widget.getAxis("bottom").setPen(pg.mkPen("#222222"))
-        self._plot_widget.getAxis("left").setPen(pg.mkPen("#222222"))
-        self._plot_widget.getAxis("bottom").setTextPen(pg.mkPen("#222222"))
-        self._plot_widget.getAxis("left").setTextPen(pg.mkPen("#222222"))
-        # Draw a solid border around the plot area
-        self._plot_widget.getPlotItem().getAxis("top").setStyle(showValues=False)
-        self._plot_widget.getPlotItem().getAxis("right").setStyle(showValues=False)
-        self._plot_widget.getPlotItem().showAxes(True)
+
+        pi = self._plot_widget.getPlotItem()
+        for side in ("bottom", "left", "top", "right"):
+            ax = pi.getAxis(side)
+            ax.setPen(_AXIS_PEN)
+            ax.setTextPen(_AXIS_PEN)
+        pi.getAxis("top").setStyle(showValues=False)
+        pi.getAxis("right").setStyle(showValues=False)
+        pi.showAxes(True, showValues=(True, True, False, False))
+
         self._legend = self._plot_widget.addLegend(offset=(10, 10))
 
-        self._selection_table = QTableWidget(0, 1)
-        self._selection_table.setHorizontalHeaderLabels(["File"])
+        # ── Selection table ───────────────────────────────────────────────
+        # Col 0 = File (read-only) | Col 1 = Label (editable) | Col 2..N = traces
+        self._selection_table = QTableWidget(0, 2)
+        self._selection_table.setHorizontalHeaderLabels(["File", "Legend label"])
         self._selection_table.verticalHeader().setVisible(False)
         self._selection_table.setAlternatingRowColors(True)
-        self._selection_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._selection_table.setSelectionMode(QTableWidget.NoSelection)
         self._selection_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeToContents
         )
+        self._selection_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.Interactive
+        )
+        self._selection_table.setColumnWidth(1, 200)
 
-        # Selection table on top, plot on bottom (30% / 70%)
-        total_h = 800
+        tbl_font = QFont()
+        tbl_font.setPointSize(_TABLE_FONT_PT)
+        self._selection_table.setFont(tbl_font)
+        self._selection_table.horizontalHeader().setFont(tbl_font)
+        row_h = tbl_font.pointSize() * 3
+        self._selection_table.verticalHeader().setDefaultSectionSize(max(row_h, 22))
+
+        self._selection_table.cellChanged.connect(self._on_cell_changed)
+
+        # ── Splitter: table top (30%), plot bottom (70%) ──────────────────
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self._selection_table)
         splitter.addWidget(self._plot_widget)
-        splitter.setSizes([int(total_h * 0.30), int(total_h * 0.70)])
+        splitter.setSizes([240, 560])
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -91,16 +113,16 @@ class PlotWindow(QMainWindow):
         self._state.files_changed.connect(self.refresh_from_state)
         self.refresh_from_state()
 
+    # ── Table population ──────────────────────────────────────────────────
+
     def refresh_from_state(self) -> None:
         loaded_files = self._state.get_loaded_files()
         valid_ids = {item.file_id for item in loaded_files}
         self._selected_traces = {
-            fid: traces
-            for fid, traces in self._selected_traces.items()
-            if fid in valid_ids
+            fid: t for fid, t in self._selected_traces.items() if fid in valid_ids
         }
 
-        # Collect all unique trace names preserving order across all files
+        # Collect unique trace names in insertion order
         all_traces: List[str] = []
         seen: Set[str] = set()
         for loaded in loaded_files:
@@ -109,21 +131,38 @@ class PlotWindow(QMainWindow):
                     all_traces.append(trace)
                     seen.add(trace)
 
-        # Col 0 = File name, col 1..N = one column per unique trace
+        n_trace_cols = len(all_traces)
+        n_cols = 2 + n_trace_cols          # File | Label | traces…
+        headers = ["File", "Legend label"] + all_traces
+
+        self._selection_table.cellChanged.disconnect(self._on_cell_changed)
+        self._selection_table.blockSignals(True)
+
         self._selection_table.setRowCount(0)
-        n_cols = 1 + len(all_traces)
         self._selection_table.setColumnCount(n_cols)
-        self._selection_table.setHorizontalHeaderLabels(["File"] + all_traces)
+        self._selection_table.setHorizontalHeaderLabels(headers)
         self._selection_table.setRowCount(len(loaded_files))
 
+        self._row_to_fid = []
         for row, loaded in enumerate(loaded_files):
+            self._row_to_fid.append(loaded.file_id)
+
+            # Col 0: file name (not editable)
             file_item = QTableWidgetItem(loaded.display_name)
+            file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
             self._selection_table.setItem(row, 0, file_item)
 
+            # Col 1: legend label (editable, default = file name)
+            label_text = self._labels.get(loaded.file_id, loaded.display_name)
+            self._labels.setdefault(loaded.file_id, loaded.display_name)
+            label_item = QTableWidgetItem(label_text)
+            self._selection_table.setItem(row, 1, label_item)
+
+            # Col 2..N: checkboxes for each trace
             chosen = self._selected_traces.setdefault(loaded.file_id, set())
             file_traces = set(loaded.data.trace_names)
 
-            for col_idx, trace in enumerate(all_traces, start=1):
+            for col_idx, trace in enumerate(all_traces, start=2):
                 if trace in file_traces:
                     cb = QCheckBox()
                     cb.setChecked(trace in chosen)
@@ -142,7 +181,22 @@ class PlotWindow(QMainWindow):
                     self._selection_table.setCellWidget(row, col_idx, cell)
 
         self._selection_table.resizeColumnToContents(0)
+        self._selection_table.blockSignals(False)
+        self._selection_table.cellChanged.connect(self._on_cell_changed)
         self._refresh_plot()
+
+    # ── Signal handlers ───────────────────────────────────────────────────
+
+    def _on_cell_changed(self, row: int, col: int) -> None:
+        if col != 1:
+            return
+        if row >= len(self._row_to_fid):
+            return
+        fid = self._row_to_fid[row]
+        item = self._selection_table.item(row, 1)
+        if item is not None:
+            self._labels[fid] = item.text()
+            self._refresh_plot()
 
     def _on_checkbox_changed(self, file_id: str, trace: str, checked: bool) -> None:
         chosen = self._selected_traces.setdefault(file_id, set())
@@ -158,6 +212,8 @@ class PlotWindow(QMainWindow):
             self._settings = dialog.settings
             self._refresh_plot()
 
+    # ── Plot rendering ────────────────────────────────────────────────────
+
     def _refresh_plot(self) -> None:
         plot_item = self._plot_widget.getPlotItem()
         plot_item.clear()
@@ -170,34 +226,33 @@ class PlotWindow(QMainWindow):
             if not selected:
                 continue
 
+            legend_label = self._labels.get(loaded.file_id, loaded.display_name)
             frequencies = np.array(loaded.data.magnitude_table.frequencies_hz, dtype=float)
+
             for trace in selected:
                 values = np.array(loaded.data.magnitude_table.traces_db[trace], dtype=float)
-                x_data, y_data = frequencies, values
+                x_data, y_data = frequencies.copy(), values.copy()
 
                 if self._settings.x_log:
                     mask = x_data > 0
-                    x_data = x_data[mask]
-                    y_data = y_data[mask]
+                    x_data, y_data = x_data[mask], y_data[mask]
                 if self._settings.y_log:
                     mask = y_data > 0
-                    x_data = x_data[mask]
-                    y_data = y_data[mask]
+                    x_data, y_data = x_data[mask], y_data[mask]
                 else:
-                    finite = np.vectorize(math.isfinite)(y_data)
-                    x_data = x_data[finite]
-                    y_data = y_data[finite]
+                    finite = np.isfinite(y_data)
+                    x_data, y_data = x_data[finite], y_data[finite]
 
                 if len(x_data) == 0:
                     continue
 
                 color = self._PLOT_COLORS[color_index % len(self._PLOT_COLORS)]
                 color_index += 1
-                label = f"{loaded.display_name} - {trace}"
+                curve_label = f"{legend_label} - {trace}"
                 plot_item.plot(
                     x_data,
                     y_data,
-                    name=label,
+                    name=curve_label,
                     pen=pg.mkPen(color=color, width=2),
                 )
 
@@ -208,13 +263,15 @@ class PlotWindow(QMainWindow):
 
         if self._settings.x_autorange and self._settings.y_autorange:
             self._plot_widget.autoRange()
-        else:
-            if self._settings.x_autorange:
-                vb.enableAutoRange(axis=vb.XAxis)
-            elif self._settings.x_min is not None and self._settings.x_max is not None:
-                vb.setXRange(self._settings.x_min, self._settings.x_max, padding=0.0)
+            return
 
-            if self._settings.y_autorange:
-                vb.enableAutoRange(axis=vb.YAxis)
-            elif self._settings.y_min is not None and self._settings.y_max is not None:
-                vb.setYRange(self._settings.y_min, self._settings.y_max, padding=0.0)
+        if self._settings.x_autorange:
+            vb.enableAutoRange(axis=vb.XAxis)
+        elif self._settings.x_min is not None and self._settings.x_max is not None:
+            vb.setXRange(self._settings.x_min, self._settings.x_max, padding=0.0)
+
+        if self._settings.y_autorange:
+            vb.enableAutoRange(axis=vb.YAxis)
+        elif self._settings.y_min is not None and self._settings.y_max is not None:
+            vb.setYRange(self._settings.y_min, self._settings.y_max, padding=0.0)
+
