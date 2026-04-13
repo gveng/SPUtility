@@ -64,6 +64,15 @@ class AppState(QObject):
     def get_file(self, file_id: str) -> LoadedTouchstone | None:
         return self._files_by_id.get(file_id)
 
+    def unload_file(self, file_id: str) -> bool:
+        if file_id not in self._files_by_id:
+            return False
+
+        del self._files_by_id[file_id]
+        self._order = [fid for fid in self._order if fid != file_id]
+        self.files_changed.emit()
+        return True
+
     def clear_files(self) -> None:
         if not self._order:
             return

@@ -3,7 +3,7 @@ import os
 
 from PyInstaller.utils.hooks import collect_submodules
 
-PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
+PROJECT_ROOT = os.path.abspath(globals().get('SPECPATH', os.getcwd()))
 
 hiddenimports = []
 hiddenimports += collect_submodules('sparams_utility')

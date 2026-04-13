@@ -23,6 +23,22 @@
     ul {
       padding-left: 20px;
     }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 10px 0;
+      font-size: 0.95rem;
+    }
+    th, td {
+      border: 1px solid #c7d2e2;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eaf2ff;
+      color: #003b84;
+    }
   </style>
 </head>
 <body>
@@ -65,14 +81,74 @@
     <li>Resize windows independently or align them using the <b>View</b> menu commands.</li>
   </ul>
 
+  <h2>TDR Calculation</h2>
+  <p>
+    The TDR window computes a time-domain impedance profile from the selected reflection trace
+    (for example <code>S11</code>) of each loaded Touchstone file.
+  </p>
+  <ol>
+    <li>The selected complex trace is extracted versus frequency.</li>
+    <li>Frequency samples are sorted and resampled on a uniform frequency grid.</li>
+    <li>A user-selected frequency-domain window is applied (for example Hann, Hamming, Blackman, Flattop, or None) to control ringing and resolution tradeoff.</li>
+    <li>An inverse real FFT (SciPy) is used to obtain the impulse response in time domain.</li>
+    <li>The impulse response is cumulatively integrated to obtain a step reflection profile.</li>
+    <li>Reflection is converted to impedance using <code>Z(t) = Z0 * (1 + rho) / (1 - rho)</code>,
+        with <code>Z0 = 50 Ohm</code>.</li>
+    <li>The result is plotted as impedance versus time.</li>
+  </ol>
+  <p>
+    In the TDR control bar, you can adjust:
+  </p>
+  <ul>
+    <li><b>Rise time</b>: applies smoothing to emulate finite edge speed.</li>
+    <li><b>Zero before front</b>: defines a flat 50 Ohm segment before the reflected step appears.</li>
+    <li><b>Total time</b>: limits the displayed time window.</li>
+    <li><b>Window</b>: lets you choose the frequency-domain windowing function used before the inverse FFT.</li>
+  </ul>
+  <p><b>Windowing quick guide</b></p>
+  <table>
+    <tr>
+      <th>Window</th>
+      <th>When to use it</th>
+      <th>Tradeoff</th>
+    </tr>
+    <tr>
+      <td>Hann</td>
+      <td>Good default for most traces.</td>
+      <td>Balanced ringing reduction and edge sharpness.</td>
+    </tr>
+    <tr>
+      <td>Hamming</td>
+      <td>When you want slightly stronger sidelobe control than Hann.</td>
+      <td>Smoother response with a small loss of time resolution.</td>
+    </tr>
+    <tr>
+      <td>Blackman</td>
+      <td>When ringing suppression is more important than edge detail.</td>
+      <td>Very good sidelobe suppression, softer transitions.</td>
+    </tr>
+    <tr>
+      <td>Flattop</td>
+      <td>When amplitude flatness is prioritized.</td>
+      <td>Lowest apparent ripple but widest main lobe (poorer resolution).</td>
+    </tr>
+    <tr>
+      <td>None</td>
+      <td>For raw response inspection or maximum edge sharpness.</td>
+      <td>Highest ringing risk and more spectral leakage artifacts.</td>
+    </tr>
+  </table>
+
   <h2>Project Files</h2>
   <p>A saved project stores the working session, including:</p>
   <ul>
     <li>The list of loaded file paths.</li>
     <li>All open graph windows.</li>
+    <li>All open TDR windows.</li>
     <li>Selected parameters in each graph window.</li>
     <li>Legend labels for each file.</li>
     <li>Plot settings and graph window sizes.</li>
+    <li>TDR file visibility/trace selections, legend labels, window choice, rise time, zero-before-front duration, total time, and TDR window sizes.</li>
   </ul>
 
   <h2>View Menu</h2>

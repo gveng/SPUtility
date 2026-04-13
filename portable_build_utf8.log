@@ -1,0 +1,130 @@
+﻿d:/Visual_Studio_Code/SParamsUtility/.venv/Scripts/python.exe : 140 INFO: PyInstaller: 6.19.0, contrib hooks: 2026.4
+In riga:1 car:1
++ d:/Visual_Studio_Code/SParamsUtility/.venv/Scripts/python.exe -m PyIn ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (140 INFO: PyIns...b hooks: 2026.4:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+140 INFO: Python: 3.12.10
+172 INFO: Platform: Windows-11-10.0.26200-SP0
+172 INFO: Python environment: D:\Visual_Studio_Code\SParamsUtility\.venv
+172 INFO: Removing temporary files and cleaning cache in C:\Users\gabri\AppData\Local\pyinstaller
+343 INFO: Module search paths (PYTHONPATH):
+['D:\\Visual_Studio_Code\\SParamsUtility',
+ 'C:\\Users\\gabri\\AppData\\Local\\Programs\\Python\\Python312\\python312.zip',
+ 'C:\\Users\\gabri\\AppData\\Local\\Programs\\Python\\Python312\\DLLs',
+ 'C:\\Users\\gabri\\AppData\\Local\\Programs\\Python\\Python312\\Lib',
+ 'C:\\Users\\gabri\\AppData\\Local\\Programs\\Python\\Python312',
+ 'D:\\Visual_Studio_Code\\SParamsUtility\\.venv',
+ 'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages',
+ 'D:\\Visual_Studio_Code\\SParamsUtility',
+ 'D:\\Visual_Studio_Code\\SParamsUtility\\src']
+812 INFO: Appending 'datas' from .spec
+812 INFO: checking Analysis
+812 INFO: Building Analysis because Analysis-00.toc is non existent
+812 INFO: Looking for Python shared library...
+825 INFO: Using Python shared library: C:\Users\gabri\AppData\Local\Programs\Python\Python312\python312.dll
+825 INFO: Running Analysis Analysis-00.toc
+825 INFO: Target bytecode optimization level: 0
+825 INFO: Initializing module dependency graph...
+826 INFO: Initializing module graph hook caches...
+828 INFO: Analyzing modules for base_library.zip ...
+2279 INFO: Processing standard module hook 'hook-encodings.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+3903 INFO: Processing standard module hook 'hook-pickle.py' from 'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+4716 INFO: Processing standard module hook 'hook-heapq.py' from 'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+5122 INFO: Caching module dependency graph...
+5162 INFO: Analyzing D:\Visual_Studio_Code\SParamsUtility\app.py
+5185 INFO: Processing standard module hook 'hook-pyqtgraph.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+564 WARNING: Failed to collect submodules for 'pyqtgraph.opengl' because importing 'pyqtgraph.opengl' raised: ModuleNotFoundError: No module named 
+'OpenGL'
+7108 INFO: hook-pyqtgraph: selected 'PySide6' as the only available Qt bindings.
+7134 INFO: Processing standard module hook 'hook-numpy.py' from 'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7576 INFO: Processing standard module hook 'hook-difflib.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7747 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7889 INFO: Processing standard module hook 'hook-xml.py' from 'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+8122 INFO: Processing standard module hook 'hook-_ctypes.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+8795 INFO: Processing standard module hook 'hook-sysconfig.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+8872 INFO: Processing standard module hook 'hook-platform.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9826 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+9826 INFO: SetuptoolsInfo: initializing cached setuptools info...
+11139 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+11154 INFO: Processing standard module hook 'hook-PySide6.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+11154 INFO: Processing standard module hook 'hook-shiboken6.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+11295 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13482 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+16216 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+28200 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+30420 INFO: Processing standard module hook 'hook-PySide6.QtSvg.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+30854 INFO: Processing standard module hook 'hook-PySide6.QtOpenGLWidgets.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+31295 INFO: Processing standard module hook 'hook-PySide6.QtTest.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+32528 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+33482 INFO: Processing module hooks (post-graph stage)...
+35299 INFO: Processing standard module hook 'hook-PySide6.QtOpenGL.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+37858 INFO: Performing binary vs. data reclassification (218 entries)
+37906 INFO: Looking for ctypes DLLs
+37950 INFO: Analyzing run-time hooks ...
+37953 INFO: Including run-time hook 'pyi_rth_inspect.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+37955 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+37957 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+37959 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+37960 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+37962 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+37965 INFO: Including run-time hook 'pyi_rth_pyqtgraph_multiprocess.py' from 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+37977 INFO: Creating base_library.zip...
+38004 INFO: Looking for dynamic libraries
+38869 INFO: Extra DLL search directories (AddDllDirectory): ['D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\shiboken6', 
+'D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\numpy.libs']
+38869 INFO: Extra DLL search directories (PATH): ['D:\\Visual_Studio_Code\\SParamsUtility\\.venv\\Lib\\site-packages\\PySide6']
+40245 INFO: Warnings written to D:\Visual_Studio_Code\SParamsUtility\build\SPUtility_Portable\warn-SPUtility_Portable.txt
+40308 INFO: Graph cross-reference written to D:\Visual_Studio_Code\SParamsUtility\build\SPUtility_Portable\xref-SPUtility_Portable.html
+40387 INFO: checking PYZ
+40387 INFO: Building PYZ because PYZ-00.toc is non existent
+40387 INFO: Building PYZ (ZlibArchive) D:\Visual_Studio_Code\SParamsUtility\build\SPUtility_Portable\PYZ-00.pyz
+40959 INFO: Building PYZ (ZlibArchive) D:\Visual_Studio_Code\SParamsUtility\build\SPUtility_Portable\PYZ-00.pyz completed successfully.
+41009 INFO: checking PKG
+41009 INFO: Building PKG because PKG-00.toc is non existent
+41009 INFO: Building PKG (CArchive) SPUtility_Portable.pkg
+41044 INFO: Building PKG (CArchive) SPUtility_Portable.pkg completed successfully.
+41054 INFO: Bootloader D:\Visual_Studio_Code\SParamsUtility\.venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+41054 INFO: checking EXE
+41054 INFO: Building EXE because EXE-00.toc is non existent
+41054 INFO: Building EXE from EXE-00.toc
+41054 INFO: Copying bootloader EXE to D:\Visual_Studio_Code\SParamsUtility\build\SPUtility_Portable\SPUtility_Portable.exe
+41102 INFO: Copying icon to EXE
+41811 INFO: Copying 0 resources to EXE
+41811 INFO: Embedding manifest in EXE
+41825 INFO: Appending PKG archive to EXE
+41884 INFO: Fixing EXE headers
+42047 INFO: Building EXE from EXE-00.toc completed successfully.
+42052 INFO: checking COLLECT
+42052 INFO: Building COLLECT because COLLECT-00.toc is non existent
+42053 INFO: Building COLLECT COLLECT-00.toc
+43684 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+43684 INFO: Build complete! The results are available in: D:\Visual_Studio_Code\SParamsUtility\dist

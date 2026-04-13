@@ -4,8 +4,9 @@ from PySide6.QtWidgets import QApplication, QTableView, QVBoxLayout, QWidget
 
 
 class TableWindow(QWidget):
-    def __init__(self, title: str, model) -> None:
+    def __init__(self, title: str, model, file_id: str) -> None:
         super().__init__()
+        self.file_id = file_id
         self.setWindowTitle(title)
         app = QApplication.instance()
         if app is not None:

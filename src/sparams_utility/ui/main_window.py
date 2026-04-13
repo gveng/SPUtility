@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 import sparams_utility as pkg
 from sparams_utility.models.state import AppState, LoadedTouchstone
 from sparams_utility.ui.plot_window import PlotWindow
+from sparams_utility.ui.tdr_window import TdrWindow
 from sparams_utility.ui.table_models import MagnitudeTableModel, RawDataTableModel
 from sparams_utility.ui.table_window import TableWindow
 
@@ -37,6 +38,7 @@ class MainWindow(QMainWindow):
 
         self._state = state
         self._plot_counter: int = 0
+        self._tdr_counter: int = 0
         self._project_dirty: bool = False
 
         # MDI area as central widget — all sub-windows live here
@@ -59,6 +61,10 @@ class MainWindow(QMainWindow):
         # ── Charts ────────────────────────────────────────────────────────
         charts_menu = self.menuBar().addMenu("Charts")
         charts_menu.addAction("Open plot window", self._open_plot_window)
+
+        # ── TDR ───────────────────────────────────────────────────────────
+        tdr_menu = self.menuBar().addMenu("TDR")
+        tdr_menu.addAction("Open TDR window", self._open_tdr_window)
 
         # ── View ──────────────────────────────────────────────────────────
         view_menu = self.menuBar().addMenu("View")
@@ -124,12 +130,17 @@ class MainWindow(QMainWindow):
         ]
 
         plot_windows = []
+        tdr_windows = []
         for sub in self._mdi.subWindowList():
             widget = sub.widget()
             if isinstance(widget, PlotWindow):
                 state = widget.export_project_state()
                 state["window_size"] = [sub.width(), sub.height()]
                 plot_windows.append(state)
+            elif isinstance(widget, TdrWindow):
+                state = widget.export_project_state()
+                state["window_size"] = [sub.width(), sub.height()]
+                tdr_windows.append(state)
 
         payload = {
             "app_name": pkg.__app_name__,
@@ -137,6 +148,7 @@ class MainWindow(QMainWindow):
             "saved_at": datetime.now().isoformat(timespec="seconds"),
             "loaded_files": files_data,
             "plots": plot_windows,
+            "tdr_plots": tdr_windows,
         }
 
         try:
@@ -178,10 +190,12 @@ class MainWindow(QMainWindow):
         self._mdi.closeAllSubWindows()
         self._state.clear_files()
         self._plot_counter = 0
+        self._tdr_counter = 0
 
         _, errors = self._state.load_files(file_paths)
 
-        restored = 0
+        restored_plot = 0
+        restored_tdr = 0
         for plot_state in payload.get("plots", []):
             if not isinstance(plot_state, dict):
                 continue
@@ -198,8 +212,29 @@ class MainWindow(QMainWindow):
             else:
                 sub.resize(1200, 720)
             plot_win.apply_project_state(plot_state)
+            plot_win.project_modified.connect(self._mark_project_dirty)
             plot_win.show()
-            restored += 1
+            restored_plot += 1
+
+        for tdr_state in payload.get("tdr_plots", []):
+            if not isinstance(tdr_state, dict):
+                continue
+            self._tdr_counter += 1
+            tdr_win = TdrWindow(self._state, window_number=self._tdr_counter)
+            sub = self._mdi.addSubWindow(tdr_win)
+            window_size = tdr_state.get("window_size")
+            if (
+                isinstance(window_size, list)
+                and len(window_size) == 2
+                and all(isinstance(v, int) for v in window_size)
+            ):
+                sub.resize(window_size[0], window_size[1])
+            else:
+                sub.resize(1200, 720)
+            tdr_win.apply_project_state(tdr_state)
+            tdr_win.project_modified.connect(self._mark_project_dirty)
+            tdr_win.show()
+            restored_tdr += 1
 
         if errors:
             QMessageBox.warning(
@@ -211,7 +246,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Project loaded",
-                f"Loaded {len(file_paths)} file(s) and restored {restored} plot window(s).",
+                f"Loaded {len(file_paths)} file(s), restored {restored_plot} plot window(s), and restored {restored_tdr} TDR window(s).",
             )
         self._project_dirty = False
 
@@ -235,10 +270,31 @@ class MainWindow(QMainWindow):
                 "Magnitude table [dB]",
                 lambda checked=False, item=loaded: self._show_magnitude_table(item),
             )
+            submenu.addSeparator()
+            submenu.addAction(
+                "Unload file",
+                lambda checked=False, file_id=loaded.file_id: self._unload_file(file_id),
+            )
+
+    def _unload_file(self, file_id: str) -> None:
+        loaded = self._state.get_file(file_id)
+        if loaded is None:
+            return
+
+        for sub in self._mdi.subWindowList():
+            widget = sub.widget()
+            if isinstance(widget, TableWindow) and widget.file_id == file_id:
+                sub.close()
+
+        removed = self._state.unload_file(file_id)
+        if removed:
+            self._mark_project_dirty()
 
     def _show_raw_table(self, loaded: LoadedTouchstone) -> None:
         win = TableWindow(
-            f"{loaded.display_name} - Raw data", RawDataTableModel(loaded.data)
+            f"{loaded.display_name} - Raw data",
+            RawDataTableModel(loaded.data),
+            file_id=loaded.file_id,
         )
         sub = self._mdi.addSubWindow(win)
         sub.resize(960, 520)
@@ -248,6 +304,7 @@ class MainWindow(QMainWindow):
         win = TableWindow(
             f"{loaded.display_name} - Magnitude [dB]",
             MagnitudeTableModel(loaded.data),
+            file_id=loaded.file_id,
         )
         sub = self._mdi.addSubWindow(win)
         sub.resize(960, 520)
@@ -262,6 +319,16 @@ class MainWindow(QMainWindow):
         sub = self._mdi.addSubWindow(plot_win)
         sub.resize(1200, 720)
         plot_win.show()
+        self._mdi.setActiveSubWindow(sub)
+        self._mark_project_dirty()
+
+    def _open_tdr_window(self) -> None:
+        self._tdr_counter += 1
+        tdr_win = TdrWindow(self._state, window_number=self._tdr_counter)
+        tdr_win.project_modified.connect(self._mark_project_dirty)
+        sub = self._mdi.addSubWindow(tdr_win)
+        sub.resize(1200, 720)
+        tdr_win.show()
         self._mdi.setActiveSubWindow(sub)
         self._mark_project_dirty()
 
