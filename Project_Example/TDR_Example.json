@@ -1,12 +1,55 @@
 {
   "app_name": "SPUtility",
-  "app_version": "1.0.5",
-  "saved_at": "2026-04-13T19:47:11",
+  "app_version": "1.1",
+  "saved_at": "2026-04-13T19:49:18",
   "loaded_files": [
     {
       "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\ph1095a-e3_Clipped_ALL_U1_Nets_and_CAP_Models_040826_114909_25084_S.s8p",
       "file_name": "ph1095a-e3_Clipped_ALL_U1_Nets_and_CAP_Models_040826_114909_25084_S.s8p"
+    },
+    {
+      "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\Aries_Full_Stack_50R_Port_13_24.s4p",
+      "file_name": "Aries_Full_Stack_50R_Port_13_24.s4p"
     }
   ],
-  "plots": []
+  "plots": [],
+  "tdr_plots": [
+    {
+      "window_title": "TDR Plots #1",
+      "tdr_settings": {
+        "rise_time_ps": 20.0,
+        "zero_before_front_ns": 1.0,
+        "total_time_ns": 3.0,
+        "window": "Hann"
+      },
+      "legend_position": [
+        10.0,
+        10.0
+      ],
+      "splitter_sizes": [
+        203,
+        473
+      ],
+      "files": [
+        {
+          "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\ph1095a-e3_Clipped_ALL_U1_Nets_and_CAP_Models_040826_114909_25084_S.s8p",
+          "file_name": "ph1095a-e3_Clipped_ALL_U1_Nets_and_CAP_Models_040826_114909_25084_S.s8p",
+          "legend_label": "ph1095a-e3_Clipped_ALL_U1_Nets_and_CAP_Models_040826_114909_25084_S.s8p",
+          "selected_trace": "S11",
+          "show": true
+        },
+        {
+          "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\Aries_Full_Stack_50R_Port_13_24.s4p",
+          "file_name": "Aries_Full_Stack_50R_Port_13_24.s4p",
+          "legend_label": "Aries_Full_Stack_50R_Port_13_24.s4p",
+          "selected_trace": "S11",
+          "show": true
+        }
+      ],
+      "window_size": [
+        1200,
+        720
+      ]
+    }
+  ]
 }
