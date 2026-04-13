@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QMainWindow,
-    QMenu,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -29,7 +28,6 @@ _TABLE_FONT_PT = 8
 
 class PlotWindow(QMainWindow):
     project_modified = Signal()
-    resize_all_graphs_requested = Signal(dict)
 
     _PLOT_COLORS = [
         "#1f77b4",
@@ -46,6 +44,7 @@ class PlotWindow(QMainWindow):
 
     def __init__(self, state: AppState, parent=None, window_number: int = 1) -> None:
         super().__init__(parent)
+        self.window_number = window_number
         self.setWindowTitle(f"S-Parameter Plots #{window_number}")
         self.resize(1250, 800)
 
@@ -112,10 +111,6 @@ class PlotWindow(QMainWindow):
         splitter.addWidget(self._plot_widget)
         splitter.setSizes([240, 560])
         self._splitter = splitter
-
-        # Right click on plot area: resize all graph windows like this one.
-        self._plot_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self._plot_widget.customContextMenuRequested.connect(self._open_plot_context_menu)
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -397,17 +392,11 @@ class PlotWindow(QMainWindow):
         except Exception:
             pass
 
-    def _open_plot_context_menu(self, pos) -> None:
-        menu = QMenu(self)
-        act_resize = menu.addAction("Resize all graph with this one")
-        chosen = menu.exec(self._plot_widget.mapToGlobal(pos))
-        if chosen is act_resize:
-            self.resize_all_graphs_requested.emit(
-                {
-                    "splitter_sizes": self._splitter.sizes(),
-                    "window_size": [self.width(), self.height()],
-                }
-            )
+    def get_graph_layout_state(self) -> dict:
+        return {
+            "splitter_sizes": self._splitter.sizes(),
+            "window_size": [self.width(), self.height()],
+        }
 
     def apply_graph_layout_state(self, state: dict) -> None:
         sizes = state.get("splitter_sizes")

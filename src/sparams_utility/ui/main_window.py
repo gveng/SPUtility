@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction("Minimize all", self._minimize_all)
         view_menu.addAction("Restore all", self._restore_all)
+        view_menu.addAction("Resize all graph with last graph window", self._resize_all_graph_windows)
         view_menu.addSeparator()
         view_menu.addAction("Close all", self._mdi.closeAllSubWindows)
 
@@ -240,9 +241,6 @@ class MainWindow(QMainWindow):
     def _open_plot_window(self) -> None:
         self._plot_counter += 1
         plot_win = PlotWindow(self._state, window_number=self._plot_counter)
-        plot_win.resize_all_graphs_requested.connect(
-            lambda state, source=plot_win: self._resize_all_graph_windows(source, state)
-        )
         plot_win.project_modified.connect(self._mark_project_dirty)
         sub = self._mdi.addSubWindow(plot_win)
         sub.resize(1200, 720)
@@ -250,9 +248,25 @@ class MainWindow(QMainWindow):
         self._mdi.setActiveSubWindow(sub)
         self._mark_project_dirty()
 
-    def _resize_all_graph_windows(self, source: PlotWindow, state: dict) -> None:
-        source_sub = source.parentWidget()
-        source_size = source_sub.size() if isinstance(source_sub, QMdiSubWindow) else None
+    def _resize_all_graph_windows(self) -> None:
+        plot_windows: list[tuple[QMdiSubWindow, PlotWindow]] = []
+        for sub in self._mdi.subWindowList():
+            widget = sub.widget()
+            if isinstance(widget, PlotWindow):
+                plot_windows.append((sub, widget))
+
+        if not plot_windows:
+            QMessageBox.information(
+                self,
+                "No graph windows",
+                "There are no graph windows to resize.",
+            )
+            return
+
+        # Use the latest opened plot window as the reference.
+        source_sub, source = max(plot_windows, key=lambda pair: pair[1].window_number)
+        state = source.get_graph_layout_state()
+        source_size = source_sub.size()
 
         for sub in self._mdi.subWindowList():
             widget = sub.widget()
@@ -261,8 +275,7 @@ class MainWindow(QMainWindow):
             if widget is source:
                 continue
 
-            if source_size is not None:
-                sub.resize(source_size)
+            sub.resize(source_size)
             widget.apply_graph_layout_state(state)
 
     # ── View helpers ──────────────────────────────────────────────────────
