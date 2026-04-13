@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -30,6 +31,7 @@ class MainWindow(QMainWindow):
 
         self._state = state
         self._plot_counter: int = 0
+        self._project_dirty: bool = False
 
         # MDI area as central widget — all sub-windows live here
         self._mdi = QMdiArea()
@@ -41,7 +43,7 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("File")
         file_menu.addAction("Open File", self._open_files)
         file_menu.addAction("Open Project", self._open_project)
-        file_menu.addAction("Save Project", self._save_project)
+        file_menu.addAction("Save Project", lambda: self._save_project())
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
 
@@ -91,8 +93,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self, "No new files", "The selected files are already loaded."
             )
+        elif added_count > 0:
+            self._mark_project_dirty()
 
-    def _save_project(self) -> None:
+    def _save_project(self) -> bool:
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Project",
@@ -100,7 +104,7 @@ class MainWindow(QMainWindow):
             "SPUtility Project (*.json);;All files (*)",
         )
         if not file_path:
-            return
+            return False
 
         loaded_files = self._state.get_loaded_files()
         files_data = [
@@ -130,9 +134,11 @@ class MainWindow(QMainWindow):
                 json.dump(payload, fp, indent=2)
         except OSError as exc:
             QMessageBox.critical(self, "Save failed", f"Could not save project:\n{exc}")
-            return
+            return False
 
+        self._project_dirty = False
         QMessageBox.information(self, "Project saved", f"Project saved to:\n{file_path}")
+        return True
 
     def _open_project(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -189,6 +195,7 @@ class MainWindow(QMainWindow):
                 "Project loaded",
                 f"Loaded {len(file_paths)} file(s) and restored {restored} plot window(s).",
             )
+        self._project_dirty = False
 
     # ── Tables menu ───────────────────────────────────────────────────────
 
@@ -233,10 +240,12 @@ class MainWindow(QMainWindow):
     def _open_plot_window(self) -> None:
         self._plot_counter += 1
         plot_win = PlotWindow(self._state, window_number=self._plot_counter)
+        plot_win.project_modified.connect(self._mark_project_dirty)
         sub = self._mdi.addSubWindow(plot_win)
         sub.resize(1200, 720)
         plot_win.show()
         self._mdi.setActiveSubWindow(sub)
+        self._mark_project_dirty()
 
     # ── View helpers ──────────────────────────────────────────────────────
 
@@ -271,3 +280,34 @@ class MainWindow(QMainWindow):
             layout.addWidget(lbl)
 
         dlg.exec()
+
+    def _mark_project_dirty(self) -> None:
+        self._project_dirty = True
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        if not self._project_dirty:
+            event.accept()
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Unsaved Changes")
+        box.setText("Project has unsaved changes. Do you want to save before closing?")
+        box.setIcon(QMessageBox.Warning)
+        box.setStandardButtons(
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel
+        )
+        box.setDefaultButton(QMessageBox.Save)
+
+        choice = box.exec()
+        if choice == QMessageBox.Save:
+            if self._save_project():
+                event.accept()
+            else:
+                event.ignore()
+            return
+
+        if choice == QMessageBox.Discard:
+            event.accept()
+            return
+
+        event.ignore()

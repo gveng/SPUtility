@@ -5,7 +5,7 @@ from typing import Dict, List, Set
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -27,6 +27,8 @@ _TABLE_FONT_PT = 8
 
 
 class PlotWindow(QMainWindow):
+    project_modified = Signal()
+
     _PLOT_COLORS = [
         "#1f77b4",
         "#d62728",
@@ -62,6 +64,8 @@ class PlotWindow(QMainWindow):
         self._plot_widget.showGrid(x=True, y=True, alpha=0.25)
         self._plot_widget.setLabel("bottom", "Frequency", units="Hz")
         self._plot_widget.setLabel("left", "Magnitude", units="dB")
+        # Keep symmetric top/bottom margins so the full plot frame remains visible.
+        self._plot_widget.getPlotItem().layout.setContentsMargins(8, 8, 8, 8)
 
         pi = self._plot_widget.getPlotItem()
         for side in ("bottom", "left", "top", "right"):
@@ -205,6 +209,7 @@ class PlotWindow(QMainWindow):
         if item is not None:
             self._labels[fid] = item.text()
             self._refresh_plot()
+            self.project_modified.emit()
 
     def _on_checkbox_changed(self, file_id: str, trace: str, checked: bool) -> None:
         chosen = self._selected_traces.setdefault(file_id, set())
@@ -213,12 +218,14 @@ class PlotWindow(QMainWindow):
         else:
             chosen.discard(trace)
         self._refresh_plot()
+        self.project_modified.emit()
 
     def _open_settings_dialog(self) -> None:
         dialog = PlotSettingsDialog(self._settings, self)
         if dialog.exec():
             self._settings = dialog.settings
             self._refresh_plot()
+            self.project_modified.emit()
 
     # ── Plot rendering ────────────────────────────────────────────────────
 
