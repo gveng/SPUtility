@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
@@ -37,6 +40,7 @@ class MainWindow(QMainWindow):
         # ── File ──────────────────────────────────────────────────────────
         file_menu = self.menuBar().addMenu("File")
         file_menu.addAction("Open File", self._open_files)
+        file_menu.addAction("Save Project", self._save_project)
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
 
@@ -86,6 +90,48 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self, "No new files", "The selected files are already loaded."
             )
+
+    def _save_project(self) -> None:
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Project",
+            "SPUtility_project.json",
+            "SPUtility Project (*.json);;All files (*)",
+        )
+        if not file_path:
+            return
+
+        loaded_files = self._state.get_loaded_files()
+        files_data = [
+            {
+                "file_path": str(loaded.path),
+                "file_name": loaded.display_name,
+            }
+            for loaded in loaded_files
+        ]
+
+        plot_windows = []
+        for sub in self._mdi.subWindowList():
+            widget = sub.widget()
+            if isinstance(widget, PlotWindow):
+                plot_windows.append(widget.export_project_state())
+
+        payload = {
+            "app_name": pkg.__app_name__,
+            "app_version": pkg.__version__,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "loaded_files": files_data,
+            "plots": plot_windows,
+        }
+
+        try:
+            with open(file_path, "w", encoding="utf-8") as fp:
+                json.dump(payload, fp, indent=2)
+        except OSError as exc:
+            QMessageBox.critical(self, "Save failed", f"Could not save project:\n{exc}")
+            return
+
+        QMessageBox.information(self, "Project saved", f"Project saved to:\n{file_path}")
 
     # ── Tables menu ───────────────────────────────────────────────────────
 

@@ -281,3 +281,31 @@ class PlotWindow(QMainWindow):
         elif self._settings.y_min is not None and self._settings.y_max is not None:
             vb.setYRange(self._settings.y_min, self._settings.y_max, padding=0.0)
 
+    def export_project_state(self) -> dict:
+        per_file = []
+        for loaded in self._state.get_loaded_files():
+            selected = sorted(self._selected_traces.get(loaded.file_id, set()))
+            per_file.append(
+                {
+                    "file_path": str(loaded.path),
+                    "file_name": loaded.display_name,
+                    "legend_label": self._labels.get(loaded.file_id, loaded.display_name),
+                    "selected_parameters": selected,
+                }
+            )
+
+        return {
+            "window_title": self.windowTitle(),
+            "plot_settings": {
+                "x_log": self._settings.x_log,
+                "y_log": self._settings.y_log,
+                "x_autorange": self._settings.x_autorange,
+                "y_autorange": self._settings.y_autorange,
+                "x_min": self._settings.x_min,
+                "x_max": self._settings.x_max,
+                "y_min": self._settings.y_min,
+                "y_max": self._settings.y_max,
+            },
+            "files": per_file,
+        }
+
