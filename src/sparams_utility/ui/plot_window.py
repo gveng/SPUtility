@@ -49,6 +49,7 @@ class PlotWindow(QMainWindow):
         self._selected_traces: Dict[str, Set[str]] = {}
         self._labels: Dict[str, str] = {}          # file_id -> legend label
         self._row_to_fid: List[str] = []            # row index -> file_id
+        self._legend_offset = (10.0, 10.0)
         self._settings = PlotSettings()
 
         settings_menu = self.menuBar().addMenu("Settings")
@@ -73,7 +74,7 @@ class PlotWindow(QMainWindow):
         # left=True → Magnitude [dB], bottom=True → Frequency [Hz]
         pi.showAxes(True, showValues=(True, False, False, True))
 
-        self._legend = self._plot_widget.addLegend(offset=(10, 10))
+        self._legend = self._plot_widget.addLegend(offset=self._legend_offset)
 
         # ── Selection table ───────────────────────────────────────────────
         # Col 0 = File (read-only) | Col 1 = Label (editable) | Col 2..N = traces
@@ -222,6 +223,7 @@ class PlotWindow(QMainWindow):
     # ── Plot rendering ────────────────────────────────────────────────────
 
     def _refresh_plot(self) -> None:
+        self._legend_offset = self._get_legend_offset()
         plot_item = self._plot_widget.getPlotItem()
         plot_item.clear()
         self._legend.clear()
@@ -262,6 +264,8 @@ class PlotWindow(QMainWindow):
                     name=curve_label,
                     pen=pg.mkPen(color=color, width=2),
                 )
+
+            self._set_legend_offset(self._legend_offset)
 
         self._apply_ranges()
 
@@ -324,9 +328,18 @@ class PlotWindow(QMainWindow):
         if restored_traces:
             self._selected_traces.update(restored_traces)
 
+        legend_position = state.get("legend_position")
+        if (
+            isinstance(legend_position, list)
+            and len(legend_position) == 2
+            and all(isinstance(v, (int, float)) for v in legend_position)
+        ):
+            self._legend_offset = (float(legend_position[0]), float(legend_position[1]))
+
         self.refresh_from_state()
 
     def export_project_state(self) -> dict:
+        self._legend_offset = self._get_legend_offset()
         per_file = []
         for loaded in self._state.get_loaded_files():
             selected = sorted(self._selected_traces.get(loaded.file_id, set()))
@@ -351,6 +364,22 @@ class PlotWindow(QMainWindow):
                 "y_min": self._settings.y_min,
                 "y_max": self._settings.y_max,
             },
+            "legend_position": [self._legend_offset[0], self._legend_offset[1]],
             "files": per_file,
         }
+
+    def _get_legend_offset(self) -> tuple[float, float]:
+        try:
+            offset = self._legend.opts.get("offset", self._legend_offset)
+            if isinstance(offset, (tuple, list)) and len(offset) == 2:
+                return float(offset[0]), float(offset[1])
+            return self._legend_offset
+        except Exception:
+            return self._legend_offset
+
+    def _set_legend_offset(self, offset: tuple[float, float]) -> None:
+        try:
+            self._legend.setOffset(offset)
+        except Exception:
+            pass
 
