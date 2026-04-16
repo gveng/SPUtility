@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGraphicsEllipseItem,
@@ -25,12 +26,14 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QInputDialog,
     QPushButton,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
+from sparams_utility.circuit_solver import solve_circuit_network, to_touchstone_string_with_format
 from sparams_utility.models.circuit import CircuitDocument, CircuitPortRef, FrequencySweepSpec
 from sparams_utility.models.state import AppState
 
@@ -45,6 +48,10 @@ _FREQUENCY_UNIT_SCALE = {
 }
 
 
+def _contrast_foreground(background: QColor) -> QColor:
+    return QColor("#f8fafc") if background.lightnessF() < 0.5 else QColor("#0f172a")
+
+
 def _block_value_suffix(block_kind: str) -> str:
     if block_kind == "lumped_r":
         return " Ohm"
@@ -56,6 +63,8 @@ def _block_value_suffix(block_kind: str) -> str:
 
 
 def _block_value_label(block_kind: str, value: float) -> str:
+    if block_kind == "gnd":
+        return "GND"
     if block_kind == "lumped_r":
         return f"R = {value:g} Ohm"
     if block_kind == "lumped_l":
@@ -109,11 +118,23 @@ class BlockPreviewWidget(QWidget):
         if self._block_kind == "port_ground":
             self._draw_ground_port_symbol(painter, rect)
             return
+        if self._block_kind == "gnd":
+            self._draw_gnd_symbol(painter, rect)
+            return
         if self._block_kind == "port_diff":
             self._draw_differential_port_symbol(painter, rect)
             return
         if self._block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
-            self._draw_lumped_symbol(painter, rect)
+            lumped_bg = QColor("#0f172a")
+            lumped_fg = _contrast_foreground(lumped_bg)
+            painter.setPen(QPen(lumped_bg, 1.2))
+            painter.setBrush(QBrush(lumped_bg))
+            painter.drawRoundedRect(rect.adjusted(6, 6, -6, -18), 6.0, 6.0)
+            self._draw_lumped_symbol(
+                painter,
+                rect.adjusted(6, 6, -6, -18),
+                foreground_color=lumped_fg,
+            )
             return
 
         left_count = (self._nports + 1) // 2
@@ -170,13 +191,25 @@ class BlockPreviewWidget(QWidget):
         painter.drawText(QRectF(rect.left() + 10.0, y_top - 12.0, 28.0, 20.0), Qt.AlignCenter, "+")
         painter.drawText(QRectF(rect.left() + 10.0, y_bottom - 12.0, 28.0, 20.0), Qt.AlignCenter, "-")
 
-    def _draw_lumped_symbol(self, painter: QPainter, rect: QRectF) -> None:
+    def _draw_gnd_symbol(self, painter: QPainter, rect: QRectF) -> None:
+        y = rect.center().y() + 8.0
+        x_port = rect.left()
+        x_ground = rect.center().x()
+        painter.setBrush(QBrush(QColor("#ffffff")))
+        painter.drawEllipse(QPointF(float(x_port), float(y)), _PORT_RADIUS, _PORT_RADIUS)
+        painter.drawLine(QPointF(x_port, y), QPointF(x_ground, y))
+        painter.drawLine(QPointF(x_ground - 12.0, y + 6.0), QPointF(x_ground + 12.0, y + 6.0))
+        painter.drawLine(QPointF(x_ground - 8.0, y + 11.0), QPointF(x_ground + 8.0, y + 11.0))
+        painter.drawLine(QPointF(x_ground - 4.0, y + 16.0), QPointF(x_ground + 4.0, y + 16.0))
+
+    def _draw_lumped_symbol(self, painter: QPainter, rect: QRectF, *, foreground_color: QColor) -> None:
         y = rect.center().y() + 10.0
         x0 = rect.left()
         x1 = rect.left() + 38.0
         x2 = rect.right() - 22.0
         x3 = rect.right()
-        painter.setBrush(QBrush(QColor("#ffffff")))
+        painter.setPen(QPen(foreground_color, 2.0))
+        painter.setBrush(QBrush(foreground_color))
         painter.drawEllipse(QPointF(float(x0), float(y)), _PORT_RADIUS, _PORT_RADIUS)
         painter.drawEllipse(QPointF(float(x3), float(y)), _PORT_RADIUS, _PORT_RADIUS)
         painter.drawLine(QPointF(x0, y), QPointF(x1, y))
@@ -234,6 +267,13 @@ def _build_palette_payload(
 
 def _special_palette_blocks() -> list[dict]:
     return [
+        {
+            "block_kind": "gnd",
+            "label": "GND",
+            "nports": 1,
+            "source_file_id": "__special__:gnd",
+            "impedance_ohm": 50.0,
+        },
         {
             "block_kind": "port_ground",
             "label": "Port To Ground",
@@ -299,6 +339,7 @@ class CircuitCanvasView(QGraphicsView):
     fileDropped = Signal(str, QPointF)
     deletePressed = Signal()
     connectionContextMenuRequested = Signal(str, QPoint)
+    blockContextMenuRequested = Signal(str, QPoint)
 
     def __init__(self, scene: QGraphicsScene, parent=None) -> None:
         super().__init__(scene, parent)
@@ -342,6 +383,14 @@ class CircuitCanvasView(QGraphicsView):
         item = self.itemAt(event.pos())
         if isinstance(item, CircuitConnectionItem):
             self.connectionContextMenuRequested.emit(item.connection_id, event.globalPos())
+            event.accept()
+            return
+        if isinstance(item, PortItem):
+            self.blockContextMenuRequested.emit(item.owner.instance.instance_id, event.globalPos())
+            event.accept()
+            return
+        if isinstance(item, CircuitBlockItem):
+            self.blockContextMenuRequested.emit(item.instance.instance_id, event.globalPos())
             event.accept()
             return
         super().contextMenuEvent(event)
@@ -428,6 +477,10 @@ class CircuitBlockItem(QGraphicsObject):
         self._apply_visual_transform()
 
     def _build_ports(self) -> None:
+        if self.instance.block_kind == "gnd":
+            self._port_items[1] = PortItem(self, 1, 0.0, 0.0)
+            self._apply_port_layout()
+            return
         if self.instance.block_kind == "port_ground":
             self._port_items[1] = PortItem(self, 1, 0.0, 0.0)
             self._apply_port_layout()
@@ -454,6 +507,8 @@ class CircuitBlockItem(QGraphicsObject):
         return y
 
     def _base_port_position(self, port_number: int) -> tuple[float, float]:
+        if self.instance.block_kind == "gnd":
+            return 0.0, self._body_height / 2.0
         if self.instance.block_kind == "port_ground":
             return 0.0, self._body_height / 2.0
         if self.instance.block_kind == "port_diff":
@@ -491,6 +546,8 @@ class CircuitBlockItem(QGraphicsObject):
             painter.drawRoundedRect(rect, 5.0, 5.0)
         if self.instance.block_kind == "port_ground":
             self._draw_ground_symbol(painter, rect)
+        elif self.instance.block_kind == "gnd":
+            self._draw_gnd_symbol(painter, rect)
         elif self.instance.block_kind == "port_diff":
             self._draw_diff_symbol(painter, rect)
         elif self.instance.block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
@@ -544,15 +601,31 @@ class CircuitBlockItem(QGraphicsObject):
         painter.drawText(QRectF(label_x, top - 10.0, 28.0, 20.0), Qt.AlignCenter, "+")
         painter.drawText(QRectF(label_x, bottom - 10.0, 28.0, 20.0), Qt.AlignCenter, "-")
 
+    def _draw_gnd_symbol(self, painter: QPainter, rect: QRectF) -> None:
+        if 1 not in self._port_items:
+            return
+        port = self._port_items[1].pos()
+        x_ground = self._mx(rect.center().x())
+        y = port.y()
+        painter.drawLine(QPointF(port.x(), y), QPointF(x_ground, y))
+        painter.drawLine(QPointF(x_ground - 12.0, y + 6.0), QPointF(x_ground + 12.0, y + 6.0))
+        painter.drawLine(QPointF(x_ground - 8.0, y + 11.0), QPointF(x_ground + 8.0, y + 11.0))
+        painter.drawLine(QPointF(x_ground - 4.0, y + 16.0), QPointF(x_ground + 4.0, y + 16.0))
+
     def _draw_lumped_symbol(self, painter: QPainter, rect: QRectF) -> None:
         if 1 not in self._port_items or 2 not in self._port_items:
             return
         y = (self._port_items[1].pos().y() + self._port_items[2].pos().y()) / 2.0
+        lumped_bg = QColor("#e2e8f0")
+        lumped_fg = _contrast_foreground(lumped_bg)
+        painter.setPen(QPen(QColor("#475569"), 1.2 if self.isSelected() else 1.0))
+        painter.setBrush(QBrush(lumped_bg))
+        painter.drawRoundedRect(rect.adjusted(8.0, 8.0, -8.0, -8.0), 6.0, 6.0)
         port_left = self._port_items[1].pos().x()
         port_right = self._port_items[2].pos().x()
         x1 = port_left + 10.0 if port_left <= port_right else port_left - 10.0
         x2 = port_right - 10.0 if port_left <= port_right else port_right + 10.0
-        pen = QPen(QColor("#0f172a"), 2.0)
+        pen = QPen(lumped_fg, 2.0)
         painter.setPen(pen)
         painter.drawLine(QPointF(port_left, y), QPointF(x1, y))
         painter.drawLine(QPointF(x2, y), QPointF(port_right, y))
@@ -704,6 +777,7 @@ class CircuitWindow(QMainWindow):
         self._canvas.fileDropped.connect(self._on_file_dropped)
         self._canvas.deletePressed.connect(self._delete_selected_items)
         self._canvas.connectionContextMenuRequested.connect(self._show_connection_context_menu)
+        self._canvas.blockContextMenuRequested.connect(self._show_block_context_menu)
 
         self._status_label = QLabel("Drag files from the left, then click two ports to create a connection.")
         self._status_label.setWordWrap(True)
@@ -740,7 +814,7 @@ class CircuitWindow(QMainWindow):
         self._updating_transform_editor = False
 
         self._export_button = QPushButton("Export equivalent Touchstone")
-        self._export_button.clicked.connect(self._export_not_implemented)
+        self._export_button.clicked.connect(self._export_equivalent_touchstone)
 
         left_panel = QFrame()
         left_panel.setFrameShape(QFrame.StyledPanel)
@@ -943,28 +1017,58 @@ class CircuitWindow(QMainWindow):
             rotation_deg = 0
         mirror_h = self._mirror_h_editor.isChecked()
         mirror_v = self._mirror_v_editor.isChecked()
-        self._document.update_instance_transform(
+        self._apply_instance_transform(
             self._selected_instance_id,
             rotation_deg=rotation_deg,
             mirror_horizontal=mirror_h,
             mirror_vertical=mirror_v,
         )
-        updated_instance = self._document.get_instance(self._selected_instance_id)
-        block_item = self._scene._block_items.get(self._selected_instance_id)
+
+    def _apply_instance_transform(
+        self,
+        instance_id: str,
+        *,
+        rotation_deg: int,
+        mirror_horizontal: bool,
+        mirror_vertical: bool,
+    ) -> None:
+        self._document.update_instance_transform(
+            instance_id,
+            rotation_deg=rotation_deg,
+            mirror_horizontal=mirror_horizontal,
+            mirror_vertical=mirror_vertical,
+        )
+        updated_instance = self._document.get_instance(instance_id)
+        block_item = self._scene._block_items.get(instance_id)
         if updated_instance is None or block_item is None:
             return
         block_item.sync_from_instance(updated_instance)
         self._refresh_connection_geometry_for_block(block_item)
         self._status_label.setText("Block transform updated.")
+        if self._selected_instance_id == instance_id:
+            self._updating_transform_editor = True
+            self._rotation_editor.setCurrentText(f"{updated_instance.rotation_deg % 360} deg")
+            self._mirror_h_editor.setChecked(updated_instance.mirror_horizontal)
+            self._mirror_v_editor.setChecked(updated_instance.mirror_vertical)
+            self._updating_transform_editor = False
         self._emit_project_modified()
 
     def create_connection(self, port_a: CircuitPortRef, port_b: CircuitPortRef) -> None:
         if port_a.instance_id == port_b.instance_id and port_a.port_number == port_b.port_number:
             self._status_label.setText("Select two different ports.")
             return
-        if self._document.is_port_connected(port_a) or self._document.is_port_connected(port_b):
-            self._status_label.setText("Each port can only belong to one internal connection in this first implementation.")
-            return
+        pair_a = (port_a.instance_id, port_a.port_number, port_b.instance_id, port_b.port_number)
+        pair_b = (port_b.instance_id, port_b.port_number, port_a.instance_id, port_a.port_number)
+        for connection in self._document.connections:
+            existing = (
+                connection.port_a.instance_id,
+                connection.port_a.port_number,
+                connection.port_b.instance_id,
+                connection.port_b.port_number,
+            )
+            if existing == pair_a or existing == pair_b:
+                self._status_label.setText("Connection already exists between these two ports.")
+                return
         connection = self._document.add_connection(port_a, port_b)
         port_item_a = self._port_item_for_ref(port_a)
         port_item_b = self._port_item_for_ref(port_b)
@@ -1000,8 +1104,14 @@ class CircuitWindow(QMainWindow):
         if issues:
             self._export_button.setEnabled(False)
             self._status_label.setText(issues[0].message)
-        else:
+            return
+
+        if not self._document.external_ports:
             self._export_button.setEnabled(False)
+            self._status_label.setText("Add at least one external port block to export an equivalent Touchstone.")
+            return
+
+        self._export_button.setEnabled(True)
 
     def _on_sweep_changed(self) -> None:
         if self._updating_sweep_controls:
@@ -1094,6 +1204,56 @@ class CircuitWindow(QMainWindow):
             self._status_label.setText("Connection removed.")
             self._emit_project_modified()
 
+    def _show_block_context_menu(self, instance_id: str, global_pos: QPoint) -> None:
+        instance = self._document.get_instance(instance_id)
+        if instance is None:
+            return
+        menu = QMenu(self)
+        rotate_right_action = menu.addAction("Rotate 90 deg")
+        rotate_left_action = menu.addAction("Rotate -90 deg")
+        menu.addSeparator()
+        mirror_h_action = menu.addAction("Mirror horizontal")
+        mirror_h_action.setCheckable(True)
+        mirror_h_action.setChecked(instance.mirror_horizontal)
+        mirror_v_action = menu.addAction("Mirror vertical")
+        mirror_v_action.setCheckable(True)
+        mirror_v_action.setChecked(instance.mirror_vertical)
+
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+        if chosen is rotate_right_action:
+            self._apply_instance_transform(
+                instance_id,
+                rotation_deg=(instance.rotation_deg + 90) % 360,
+                mirror_horizontal=instance.mirror_horizontal,
+                mirror_vertical=instance.mirror_vertical,
+            )
+            return
+        if chosen is rotate_left_action:
+            self._apply_instance_transform(
+                instance_id,
+                rotation_deg=(instance.rotation_deg - 90) % 360,
+                mirror_horizontal=instance.mirror_horizontal,
+                mirror_vertical=instance.mirror_vertical,
+            )
+            return
+        if chosen is mirror_h_action:
+            self._apply_instance_transform(
+                instance_id,
+                rotation_deg=instance.rotation_deg,
+                mirror_horizontal=not instance.mirror_horizontal,
+                mirror_vertical=instance.mirror_vertical,
+            )
+            return
+        if chosen is mirror_v_action:
+            self._apply_instance_transform(
+                instance_id,
+                rotation_deg=instance.rotation_deg,
+                mirror_horizontal=instance.mirror_horizontal,
+                mirror_vertical=not instance.mirror_vertical,
+            )
+
     def export_project_state(self) -> dict:
         return {
             "window_title": self.windowTitle(),
@@ -1156,11 +1316,67 @@ class CircuitWindow(QMainWindow):
         self._scene.rebuild_export_state(self._document)
         self._refresh_validation_state()
 
-    def _export_not_implemented(self) -> None:
+    def _export_equivalent_touchstone(self) -> None:
+        format_choices = ["RI", "MA", "DB"]
+        selected_format, ok = QInputDialog.getItem(
+            self,
+            "Export format",
+            "Touchstone data format:",
+            format_choices,
+            0,
+            False,
+        )
+        if not ok:
+            return
+
+        unit_choices = ["Hz", "KHz", "MHz", "GHz"]
+        default_unit = self._document.sweep.display_unit
+        default_index = unit_choices.index(default_unit) if default_unit in unit_choices else 3
+        selected_unit, ok = QInputDialog.getItem(
+            self,
+            "Frequency unit",
+            "Frequency unit in output file:",
+            unit_choices,
+            default_index,
+            False,
+        )
+        if not ok:
+            return
+
+        try:
+            result = solve_circuit_network(self._document, self._state)
+            text = to_touchstone_string_with_format(
+                result,
+                data_format=selected_format,
+                frequency_unit=selected_unit,
+            )
+        except Exception as exc:  # pragma: no cover - runtime-facing error path
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+
+        suffix = f"s{result.nports}p"
+        default_name = f"equivalent.{suffix}"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export equivalent Touchstone",
+            default_name,
+            f"Touchstone (*.{suffix});;All files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(text)
+        except Exception as exc:  # pragma: no cover - runtime-facing error path
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+
+        self._status_label.setText(f"Equivalent Touchstone exported to {path}.")
         QMessageBox.information(
             self,
-            "Not implemented yet",
-            "The graphical circuit editor is in place, but the RF solver and Touchstone export are not implemented in this first slice.",
+            "Export completed",
+            f"Saved {result.nports}-port equivalent network ({selected_format}, {selected_unit}).",
         )
 
     def _emit_project_modified(self) -> None:

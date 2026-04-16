@@ -284,15 +284,25 @@ class CircuitDocument:
         external: List[ExternalPortAssignment] = []
         index = 1
         for instance in self.instances:
-            if instance.block_kind not in {"port_ground", "port_diff"}:
-                continue
-            external.append(
-                ExternalPortAssignment(
-                    external_port_number=index,
-                    port_ref=CircuitPortRef(instance_id=instance.instance_id, port_number=1),
+            if instance.block_kind == "port_ground":
+                external.append(
+                    ExternalPortAssignment(
+                        external_port_number=index,
+                        port_ref=CircuitPortRef(instance_id=instance.instance_id, port_number=1),
+                    )
                 )
-            )
-            index += 1
+                index += 1
+                continue
+            if instance.block_kind == "port_diff":
+                for port_number in (1, 2):
+                    external.append(
+                        ExternalPortAssignment(
+                            external_port_number=index,
+                            port_ref=CircuitPortRef(instance_id=instance.instance_id, port_number=port_number),
+                        )
+                    )
+                    index += 1
+                continue
         self.external_ports = external
 
     def is_port_connected(self, port_ref: CircuitPortRef) -> bool:
