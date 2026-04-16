@@ -189,12 +189,58 @@ def _build_touchstone_cache(document: CircuitDocument, state: AppState) -> Dict[
             for row in range(loaded.data.nports):
                 for col in range(loaded.data.nports):
                     s_cube[f_idx, row, col] = point.s_matrix[row][col].complex_value
+        freqs, s_cube = _fill_missing_frequency_points(freqs, s_cube)
         cache[instance.source_file_id] = (
             freqs,
             s_cube,
             float(loaded.data.options.reference_resistance),
         )
     return cache
+
+
+def _fill_missing_frequency_points(source_freqs: np.ndarray, s_cube: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    if source_freqs.size <= 2:
+        order = np.argsort(source_freqs)
+        return source_freqs[order], s_cube[order]
+
+    order = np.argsort(source_freqs)
+    freqs_sorted = source_freqs[order]
+    s_sorted = s_cube[order]
+
+    unique_freqs, unique_idx = np.unique(freqs_sorted, return_index=True)
+    if unique_freqs.size <= 2:
+        return unique_freqs, s_sorted[unique_idx]
+
+    s_unique = s_sorted[unique_idx]
+    delta = np.diff(unique_freqs)
+    positive_delta = delta[delta > 0.0]
+    if positive_delta.size == 0:
+        return unique_freqs, s_unique
+
+    nominal_step = float(np.median(positive_delta))
+    if not np.isfinite(nominal_step) or nominal_step <= 0.0:
+        return unique_freqs, s_unique
+
+    gap_threshold = nominal_step * 1.5
+    if not np.any(delta > gap_threshold):
+        return unique_freqs, s_unique
+
+    filled_freqs: List[float] = [float(unique_freqs[0])]
+    filled_s: List[np.ndarray] = [s_unique[0]]
+
+    for idx, gap in enumerate(delta):
+        f0 = float(unique_freqs[idx])
+        f1 = float(unique_freqs[idx + 1])
+        s0 = s_unique[idx]
+        s1 = s_unique[idx + 1]
+
+        segments = max(1, int(round(gap / nominal_step)))
+        for segment in range(1, segments + 1):
+            alpha = float(segment) / float(segments)
+            filled_freqs.append(f0 + alpha * (f1 - f0))
+            filled_s.append((1.0 - alpha) * s0 + alpha * s1)
+
+    return np.array(filled_freqs, dtype=float), np.array(filled_s, dtype=np.complex128)
 
 
 def _stamp_lumped(
