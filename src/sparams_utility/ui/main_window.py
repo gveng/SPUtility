@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 import sparams_utility as pkg
 from sparams_utility.models.state import AppState, LoadedTouchstone
+from sparams_utility.ui.circuit_window import CircuitWindow
 from sparams_utility.ui.plot_window import PlotWindow
 from sparams_utility.ui.tdr_window import TdrWindow
 from sparams_utility.ui.table_models import MagnitudeTableModel, RawDataTableModel
@@ -39,6 +40,7 @@ class MainWindow(QMainWindow):
         self._state = state
         self._plot_counter: int = 0
         self._tdr_counter: int = 0
+        self._circuit_counter: int = 0
         self._project_dirty: bool = False
 
         # MDI area as central widget — all sub-windows live here
@@ -61,6 +63,9 @@ class MainWindow(QMainWindow):
         # ── Charts ────────────────────────────────────────────────────────
         charts_menu = self.menuBar().addMenu("Charts")
         charts_menu.addAction("Open plot window", self._open_plot_window)
+
+        circuit_menu = self.menuBar().addMenu("Circuit")
+        circuit_menu.addAction("Open circuit composer", self._open_circuit_window)
 
         # ── TDR ───────────────────────────────────────────────────────────
         tdr_menu = self.menuBar().addMenu("TDR")
@@ -131,6 +136,7 @@ class MainWindow(QMainWindow):
 
         plot_windows = []
         tdr_windows = []
+        circuit_windows = []
         for sub in self._mdi.subWindowList():
             widget = sub.widget()
             if isinstance(widget, PlotWindow):
@@ -141,6 +147,10 @@ class MainWindow(QMainWindow):
                 state = widget.export_project_state()
                 state["window_size"] = [sub.width(), sub.height()]
                 tdr_windows.append(state)
+            elif isinstance(widget, CircuitWindow):
+                state = widget.export_project_state()
+                state["window_size"] = [sub.width(), sub.height()]
+                circuit_windows.append(state)
 
         payload = {
             "app_name": pkg.__app_name__,
@@ -149,6 +159,7 @@ class MainWindow(QMainWindow):
             "loaded_files": files_data,
             "plots": plot_windows,
             "tdr_plots": tdr_windows,
+            "circuits": circuit_windows,
         }
 
         try:
@@ -191,6 +202,7 @@ class MainWindow(QMainWindow):
         self._state.clear_files()
         self._plot_counter = 0
         self._tdr_counter = 0
+        self._circuit_counter = 0
 
         _, errors = self._state.load_files(file_paths)
 
@@ -236,6 +248,27 @@ class MainWindow(QMainWindow):
             tdr_win.show()
             restored_tdr += 1
 
+        restored_circuit = 0
+        for circuit_state in payload.get("circuits", []):
+            if not isinstance(circuit_state, dict):
+                continue
+            self._circuit_counter += 1
+            circuit_win = CircuitWindow(self._state, window_number=self._circuit_counter)
+            sub = self._mdi.addSubWindow(circuit_win)
+            window_size = circuit_state.get("window_size")
+            if (
+                isinstance(window_size, list)
+                and len(window_size) == 2
+                and all(isinstance(v, int) for v in window_size)
+            ):
+                sub.resize(window_size[0], window_size[1])
+            else:
+                sub.resize(1280, 760)
+            circuit_win.apply_project_state(circuit_state)
+            circuit_win.project_modified.connect(self._mark_project_dirty)
+            circuit_win.show()
+            restored_circuit += 1
+
         if errors:
             QMessageBox.warning(
                 self,
@@ -246,7 +279,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Project loaded",
-                f"Loaded {len(file_paths)} file(s), restored {restored_plot} plot window(s), and restored {restored_tdr} TDR window(s).",
+                f"Loaded {len(file_paths)} file(s), restored {restored_plot} plot window(s), restored {restored_tdr} TDR window(s), and restored {restored_circuit} circuit window(s).",
             )
         self._project_dirty = False
 
@@ -280,6 +313,16 @@ class MainWindow(QMainWindow):
         loaded = self._state.get_file(file_id)
         if loaded is None:
             return
+
+        for sub in self._mdi.subWindowList():
+            widget = sub.widget()
+            if isinstance(widget, CircuitWindow) and widget.references_file(file_id):
+                QMessageBox.warning(
+                    self,
+                    "File in use",
+                    "This file is used by at least one circuit window. Remove its block instances before unloading it.",
+                )
+                return
 
         for sub in self._mdi.subWindowList():
             widget = sub.widget()
@@ -329,6 +372,16 @@ class MainWindow(QMainWindow):
         sub = self._mdi.addSubWindow(tdr_win)
         sub.resize(1200, 720)
         tdr_win.show()
+        self._mdi.setActiveSubWindow(sub)
+        self._mark_project_dirty()
+
+    def _open_circuit_window(self) -> None:
+        self._circuit_counter += 1
+        circuit_win = CircuitWindow(self._state, window_number=self._circuit_counter)
+        circuit_win.project_modified.connect(self._mark_project_dirty)
+        sub = self._mdi.addSubWindow(circuit_win)
+        sub.resize(1280, 760)
+        circuit_win.show()
         self._mdi.setActiveSubWindow(sub)
         self._mark_project_dirty()
 

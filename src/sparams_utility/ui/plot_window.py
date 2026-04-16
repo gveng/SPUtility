@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QMainWindow,
+    QMenu,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -108,6 +109,8 @@ class PlotWindow(QMainWindow):
         self._selection_table.verticalHeader().setDefaultSectionSize(max(row_h, 22))
 
         self._selection_table.cellChanged.connect(self._on_cell_changed)
+        self._selection_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._selection_table.customContextMenuRequested.connect(self._on_table_context_menu)
 
         # ── Splitter: table top (30%), plot bottom (70%) ──────────────────
         splitter = QSplitter(Qt.Vertical)
@@ -204,6 +207,17 @@ class PlotWindow(QMainWindow):
         self._refresh_plot()
 
     # ── Signal handlers ───────────────────────────────────────────────────
+
+    def _on_table_context_menu(self, pos) -> None:
+        row = self._selection_table.rowAt(pos.y())
+        if row < 0 or row >= len(self._row_to_fid):
+            return
+        fid = self._row_to_fid[row]
+        menu = QMenu(self)
+        action = menu.addAction("Unload file")
+        chosen = menu.exec(self._selection_table.viewport().mapToGlobal(pos))
+        if chosen is action:
+            self._state.unload_file(fid)
 
     def _on_cell_changed(self, row: int, col: int) -> None:
         if col != 1:

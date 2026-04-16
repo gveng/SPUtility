@@ -145,11 +145,30 @@
     <li>The list of loaded file paths.</li>
     <li>All open graph windows.</li>
     <li>All open TDR windows.</li>
+    <li>All open circuit editor windows.</li>
     <li>Selected parameters in each graph window.</li>
     <li>Legend labels for each file.</li>
     <li>Plot settings and graph window sizes.</li>
     <li>TDR file visibility/trace selections, legend labels, window choice, rise time, zero-before-front duration, total time, and TDR window sizes.</li>
   </ul>
+
+  <h2>Circuit Editor</h2>
+  <p>
+    The circuit editor is a graphical workspace for building RF interconnections from the loaded
+    Touchstone files and from the editor-specific blocks available in the left panel.
+  </p>
+  <ul>
+    <li>The left panel contains draggable blocks. It includes the loaded Touchstone files and editor blocks such as grounded and differential ports.</li>
+    <li>The center panel is the circuit canvas where you place blocks and create interconnections between ports.</li>
+    <li>The right panel contains editor settings, including frequency sweep controls, impedance settings for supported blocks, transform controls, and export actions.</li>
+    <li>All three panels are resizable by dragging the splitter bars.</li>
+    <li>You can create an interconnection by clicking one port and then clicking another port.</li>
+    <li>You can remove an interconnection by selecting the line and pressing <b>Delete</b>, or by right-clicking the line and choosing <b>Delete connection</b>.</li>
+    <li>Supported special blocks keep their configurable impedance visible in the schematic.</li>
+  </ul>
+  <p>
+    The circuit editor state is saved inside the project file together with the other open windows.
+  </p>
 
   <h2>View Menu</h2>
   <ul>
