@@ -1112,6 +1112,87 @@ class CircuitWindow(QMainWindow):
             return
 
         self._export_button.setEnabled(True)
+        warnings = self._collect_preflight_warnings()
+        if warnings:
+            self._status_label.setText(warnings[0])
+            self._status_label.setToolTip("\n".join(warnings))
+            return
+        self._status_label.setText("Circuit ready for export.")
+        self._status_label.setToolTip("")
+
+    def _collect_preflight_warnings(self) -> list[str]:
+        warnings: list[str] = []
+        sweep = self._document.sweep
+        for instance in self._document.instances:
+            if instance.block_kind != "touchstone":
+                continue
+            loaded = self._state.get_file(instance.source_file_id)
+            if loaded is None:
+                warnings.append(f"Touchstone block '{instance.display_label}' is not loaded.")
+                continue
+            if not loaded.data.points:
+                warnings.append(f"Touchstone block '{instance.display_label}' has no frequency samples.")
+                continue
+            f_min = loaded.data.points[0].frequency_hz
+            f_max = loaded.data.points[-1].frequency_hz
+            if sweep.fmin_hz < f_min or sweep.fmax_hz > f_max:
+                warnings.append(
+                    f"Sweep extends beyond '{instance.display_label}' data range "
+                    f"({self._format_frequency_hz(f_min)} to {self._format_frequency_hz(f_max)})."
+                )
+        return warnings
+
+    def _format_frequency_hz(self, value_hz: float) -> str:
+        if value_hz >= 1e9:
+            return f"{value_hz / 1e9:.6g} GHz"
+        if value_hz >= 1e6:
+            return f"{value_hz / 1e6:.6g} MHz"
+        if value_hz >= 1e3:
+            return f"{value_hz / 1e3:.6g} KHz"
+        return f"{value_hz:.6g} Hz"
+
+    def _describe_passivity(self, result) -> str:  # noqa: ANN001
+        diagnostic = result.passivity
+        if diagnostic is None:
+            return "Passivity check unavailable."
+        summary = diagnostic.summary
+        if summary.worst_frequency_hz is None:
+            return "Passivity: OK."
+        if summary.severity == "pass":
+            return "Passivity: OK."
+        if summary.severity == "noise":
+            return (
+                "Passivity: minor numerical overrun at "
+                f"{self._format_frequency_hz(summary.worst_frequency_hz)} "
+                f"(max sigma = {summary.worst_sigma_max:.6g})."
+            )
+        if summary.severity == "borderline":
+            return (
+                "Passivity: borderline overrun near "
+                f"{self._format_frequency_hz(summary.worst_frequency_hz)} "
+                f"(max sigma = {summary.worst_sigma_max:.6g})."
+            )
+        return (
+            "Passivity violation near "
+            f"{self._format_frequency_hz(summary.worst_frequency_hz)} "
+            f"(max sigma = {summary.worst_sigma_max:.6g}, affected points = {summary.points_over_warn})."
+        )
+
+    def _confirm_passivity_export(self, result) -> bool:  # noqa: ANN001
+        diagnostic = result.passivity
+        if diagnostic is None or diagnostic.summary.severity != "hard":
+            return True
+        summary = diagnostic.summary
+        choice = QMessageBox.warning(
+            self,
+            "Passivity warning",
+            "The solved network is not passive.\n\n"
+            f"Worst case: sigma = {summary.worst_sigma_max:.6g} at {self._format_frequency_hz(summary.worst_frequency_hz or 0.0)}.\n"
+            "Export anyway?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return choice == QMessageBox.Yes
 
     def _on_sweep_changed(self) -> None:
         if self._updating_sweep_controls:
@@ -1344,13 +1425,19 @@ class CircuitWindow(QMainWindow):
             return
 
         try:
+            self._status_label.setText("Solving equivalent network...")
             result = solve_circuit_network(self._document, self._state)
+            self._status_label.setText(self._describe_passivity(result))
+            if not self._confirm_passivity_export(result):
+                self._status_label.setText("Export cancelled due to passivity warning.")
+                return
             text = to_touchstone_string_with_format(
                 result,
                 data_format=selected_format,
                 frequency_unit=selected_unit,
             )
         except Exception as exc:  # pragma: no cover - runtime-facing error path
+            self._status_label.setText(f"Export failed: {exc}")
             QMessageBox.warning(self, "Export failed", str(exc))
             return
 
@@ -1369,14 +1456,15 @@ class CircuitWindow(QMainWindow):
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(text)
         except Exception as exc:  # pragma: no cover - runtime-facing error path
+            self._status_label.setText(f"Export failed: {exc}")
             QMessageBox.warning(self, "Export failed", str(exc))
             return
 
-        self._status_label.setText(f"Equivalent Touchstone exported to {path}.")
+        self._status_label.setText(f"Equivalent Touchstone exported to {path}. {self._describe_passivity(result)}")
         QMessageBox.information(
             self,
             "Export completed",
-            f"Saved {result.nports}-port equivalent network ({selected_format}, {selected_unit}).",
+            f"Saved {result.nports}-port equivalent network ({selected_format}, {selected_unit}).\n\n{self._describe_passivity(result)}",
         )
 
     def _emit_project_modified(self) -> None:

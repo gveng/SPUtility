@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
+from scipy import linalg
+from scipy.interpolate import PchipInterpolator
 
 from sparams_utility.models.circuit import CircuitDocument, CircuitPortRef
 from sparams_utility.models.state import AppState
@@ -16,6 +18,52 @@ class CircuitSolveResult:
     frequencies_hz: np.ndarray
     s_matrices: np.ndarray  # shape (nfreq, nports, nports)
     z0_ohm: np.ndarray  # shape (nports,)
+    passivity: "PassivityDiagnostic | None" = None
+
+
+@dataclass(frozen=True)
+class PassivityThresholds:
+    sigma_noise_tol: float = 1e-6
+    sigma_warn_tol: float = 1e-4
+    sigma_hard_tol: float = 1e-3
+    persistent_run_points: int = 3
+    persistent_fraction: float = 0.005
+
+
+@dataclass(frozen=True)
+class PassivitySummary:
+    severity: str
+    worst_frequency_hz: float | None
+    worst_sigma_max: float
+    worst_sigma_excess: float
+    worst_min_margin: float
+    points_over_noise: int
+    points_over_warn: int
+    points_over_hard: int
+    longest_warn_run: int
+    longest_hard_run: int
+
+
+@dataclass(frozen=True)
+class PassivityDiagnostic:
+    thresholds: PassivityThresholds
+    frequencies_hz: np.ndarray
+    sigma_max: np.ndarray
+    sigma_excess: np.ndarray
+    min_margin: np.ndarray
+    summary: PassivitySummary
+
+
+@dataclass(frozen=True)
+class _TouchstoneInterpolationCache:
+    frequencies_hz: np.ndarray
+    interpolation_axis: np.ndarray
+    y_cube: np.ndarray
+    z0_ohm: float
+    use_log_axis: bool
+    interpolation_mode: str
+    real_interpolator: Any | None = None
+    imag_interpolator: Any | None = None
 
 
 def solve_circuit_network(document: CircuitDocument, state: AppState) -> CircuitSolveResult:
@@ -100,11 +148,88 @@ def solve_circuit_network(document: CircuitDocument, state: AppState) -> Circuit
         frequencies_hz=frequencies,
         s_matrices=s_out,
         z0_ohm=z0_array,
+        passivity=_analyze_passivity(frequencies, s_out),
     )
 
 
 def to_touchstone_string(result: CircuitSolveResult) -> str:
     return to_touchstone_string_with_format(result, data_format="RI", frequency_unit="GHz")
+
+
+def _analyze_passivity(
+    frequencies_hz: np.ndarray,
+    s_matrices: np.ndarray,
+    thresholds: PassivityThresholds | None = None,
+) -> PassivityDiagnostic:
+    active_thresholds = thresholds or PassivityThresholds()
+    sigma_max = np.zeros(frequencies_hz.size, dtype=float)
+    sigma_excess = np.zeros(frequencies_hz.size, dtype=float)
+    min_margin = np.zeros(frequencies_hz.size, dtype=float)
+
+    for idx, s_matrix in enumerate(s_matrices):
+        singular_values = np.linalg.svd(s_matrix, compute_uv=False)
+        sigma = float(singular_values[0]) if singular_values.size else 0.0
+        sigma_max[idx] = sigma
+        sigma_excess[idx] = max(0.0, sigma - 1.0)
+        passive_margin = np.eye(s_matrix.shape[0], dtype=np.complex128) - s_matrix.conj().T @ s_matrix
+        hermitian_margin = 0.5 * (passive_margin + passive_margin.conj().T)
+        eigenvalues = np.linalg.eigvalsh(hermitian_margin)
+        min_margin[idx] = float(eigenvalues[0]) if eigenvalues.size else 0.0
+
+    points_over_noise = int(np.count_nonzero(sigma_excess > active_thresholds.sigma_noise_tol))
+    points_over_warn = int(np.count_nonzero(sigma_excess > active_thresholds.sigma_warn_tol))
+    points_over_hard = int(np.count_nonzero(sigma_excess > active_thresholds.sigma_hard_tol))
+    longest_warn_run = _longest_true_run(sigma_excess > active_thresholds.sigma_warn_tol)
+    longest_hard_run = _longest_true_run(sigma_excess > active_thresholds.sigma_hard_tol)
+    persistent_points = max(
+        active_thresholds.persistent_run_points,
+        int(math.ceil(frequencies_hz.size * active_thresholds.persistent_fraction)),
+    )
+    worst_idx = int(np.argmax(sigma_excess)) if sigma_excess.size else 0
+    worst_excess = float(sigma_excess[worst_idx]) if sigma_excess.size else 0.0
+    worst_sigma = float(sigma_max[worst_idx]) if sigma_max.size else 0.0
+    worst_margin = float(min_margin[np.argmin(min_margin)]) if min_margin.size else 0.0
+    worst_frequency = float(frequencies_hz[worst_idx]) if sigma_excess.size else None
+
+    severity = "pass"
+    if points_over_hard > 0 or longest_warn_run >= persistent_points:
+        severity = "hard"
+    elif worst_excess > active_thresholds.sigma_warn_tol or points_over_warn > 0:
+        severity = "borderline"
+    elif worst_excess > active_thresholds.sigma_noise_tol:
+        severity = "noise"
+
+    return PassivityDiagnostic(
+        thresholds=active_thresholds,
+        frequencies_hz=frequencies_hz.copy(),
+        sigma_max=sigma_max,
+        sigma_excess=sigma_excess,
+        min_margin=min_margin,
+        summary=PassivitySummary(
+            severity=severity,
+            worst_frequency_hz=worst_frequency,
+            worst_sigma_max=worst_sigma,
+            worst_sigma_excess=worst_excess,
+            worst_min_margin=worst_margin,
+            points_over_noise=points_over_noise,
+            points_over_warn=points_over_warn,
+            points_over_hard=points_over_hard,
+            longest_warn_run=longest_warn_run,
+            longest_hard_run=longest_hard_run,
+        ),
+    )
+
+
+def _longest_true_run(mask: np.ndarray) -> int:
+    longest = 0
+    current = 0
+    for value in np.asarray(mask, dtype=bool):
+        if value:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
 
 
 def to_touchstone_string_with_format(
@@ -171,8 +296,8 @@ def _build_frequency_grid(document: CircuitDocument) -> np.ndarray:
     return freqs
 
 
-def _build_touchstone_cache(document: CircuitDocument, state: AppState) -> Dict[str, Tuple[np.ndarray, np.ndarray, float]]:
-    cache: Dict[str, Tuple[np.ndarray, np.ndarray, float]] = {}
+def _build_touchstone_cache(document: CircuitDocument, state: AppState) -> Dict[str, _TouchstoneInterpolationCache]:
+    cache: Dict[str, _TouchstoneInterpolationCache] = {}
     for instance in document.instances:
         if instance.block_kind != "touchstone":
             continue
@@ -190,57 +315,51 @@ def _build_touchstone_cache(document: CircuitDocument, state: AppState) -> Dict[
                 for col in range(loaded.data.nports):
                     s_cube[f_idx, row, col] = point.s_matrix[row][col].complex_value
         freqs, s_cube = _fill_missing_frequency_points(freqs, s_cube)
-        cache[instance.source_file_id] = (
-            freqs,
-            s_cube,
-            float(loaded.data.options.reference_resistance),
+        z0 = float(loaded.data.options.reference_resistance)
+        y_cube = np.zeros_like(s_cube)
+        for f_idx in range(freqs.size):
+            y_cube[f_idx] = _s_to_y(s_cube[f_idx], z0)
+
+        interpolation_axis, use_log_axis = _choose_interpolation_axis(freqs)
+        mode, real_interpolator, imag_interpolator = _build_matrix_interpolator(interpolation_axis, y_cube)
+        cache[instance.source_file_id] = _TouchstoneInterpolationCache(
+            frequencies_hz=freqs,
+            interpolation_axis=interpolation_axis,
+            y_cube=y_cube,
+            z0_ohm=z0,
+            use_log_axis=use_log_axis,
+            interpolation_mode=mode,
+            real_interpolator=real_interpolator,
+            imag_interpolator=imag_interpolator,
         )
     return cache
 
 
 def _fill_missing_frequency_points(source_freqs: np.ndarray, s_cube: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    if source_freqs.size <= 2:
-        order = np.argsort(source_freqs)
-        return source_freqs[order], s_cube[order]
-
     order = np.argsort(source_freqs)
     freqs_sorted = source_freqs[order]
     s_sorted = s_cube[order]
 
     unique_freqs, unique_idx = np.unique(freqs_sorted, return_index=True)
-    if unique_freqs.size <= 2:
-        return unique_freqs, s_sorted[unique_idx]
+    return unique_freqs, s_sorted[unique_idx]
 
-    s_unique = s_sorted[unique_idx]
-    delta = np.diff(unique_freqs)
-    positive_delta = delta[delta > 0.0]
-    if positive_delta.size == 0:
-        return unique_freqs, s_unique
 
-    nominal_step = float(np.median(positive_delta))
-    if not np.isfinite(nominal_step) or nominal_step <= 0.0:
-        return unique_freqs, s_unique
+def _choose_interpolation_axis(freqs_hz: np.ndarray) -> Tuple[np.ndarray, bool]:
+    if np.all(freqs_hz > 0.0):
+        return np.log(freqs_hz), True
+    return freqs_hz.astype(float), False
 
-    gap_threshold = nominal_step * 1.5
-    if not np.any(delta > gap_threshold):
-        return unique_freqs, s_unique
 
-    filled_freqs: List[float] = [float(unique_freqs[0])]
-    filled_s: List[np.ndarray] = [s_unique[0]]
-
-    for idx, gap in enumerate(delta):
-        f0 = float(unique_freqs[idx])
-        f1 = float(unique_freqs[idx + 1])
-        s0 = s_unique[idx]
-        s1 = s_unique[idx + 1]
-
-        segments = max(1, int(round(gap / nominal_step)))
-        for segment in range(1, segments + 1):
-            alpha = float(segment) / float(segments)
-            filled_freqs.append(f0 + alpha * (f1 - f0))
-            filled_s.append((1.0 - alpha) * s0 + alpha * s1)
-
-    return np.array(filled_freqs, dtype=float), np.array(filled_s, dtype=np.complex128)
+def _build_matrix_interpolator(x_axis: np.ndarray, matrix_cube: np.ndarray) -> Tuple[str, Any | None, Any | None]:
+    if x_axis.size <= 1:
+        return "constant", None, None
+    if x_axis.size == 2:
+        return "linear", None, None
+    return (
+        "pchip",
+        PchipInterpolator(x_axis, matrix_cube.real, axis=0, extrapolate=False),
+        PchipInterpolator(x_axis, matrix_cube.imag, axis=0, extrapolate=False),
+    )
 
 
 def _stamp_lumped(
@@ -283,13 +402,11 @@ def _stamp_touchstone(
     grounded_roots: set[Tuple[str, int]],
     root_to_node: Dict[Tuple[str, int], int],
     y_global: np.ndarray,
-    cache: Dict[str, Tuple[np.ndarray, np.ndarray, float]],
+    cache: Dict[str, _TouchstoneInterpolationCache],
 ) -> None:
     if instance.source_file_id not in cache:
         return
-    freqs, s_cube, z0 = cache[instance.source_file_id]
-    s_interp = _interpolate_s_matrix(freqs, s_cube, frequency)
-    y_block = _s_to_y(s_interp, float(z0))
+    y_block = _interpolate_y_matrix(cache[instance.source_file_id], frequency)
 
     roots = [uf.find((instance.instance_id, idx + 1)) for idx in range(instance.nports)]
     for i in range(instance.nports):
@@ -363,10 +480,7 @@ def _reduce_to_external_ports(y_global: np.ndarray, external_nodes: List[int]) -
     y_ie = y_global[np.ix_(int_nodes, ext)]
     y_ii = y_global[np.ix_(int_nodes, int_nodes)]
 
-    try:
-        correction = y_ei @ np.linalg.solve(y_ii, y_ie)
-    except np.linalg.LinAlgError:
-        correction = y_ei @ (np.linalg.pinv(y_ii) @ y_ie)
+    correction = y_ei @ _solve_linear_system(y_ii, y_ie, context="Schur complement reduction")
 
     return y_ee - correction
 
@@ -376,11 +490,7 @@ def _s_to_y(s_matrix: np.ndarray, z0: float) -> np.ndarray:
     ident = np.eye(n, dtype=np.complex128)
     a = ident + s_matrix
     b = ident - s_matrix
-    try:
-        inv_a = np.linalg.inv(a)
-    except np.linalg.LinAlgError:
-        inv_a = np.linalg.pinv(a)
-    return (inv_a @ b) / z0
+    return _solve_linear_system(a, b, context="S to Y conversion") / z0
 
 
 def _y_to_s(y_matrix: np.ndarray, z0_ports: np.ndarray) -> np.ndarray:
@@ -390,26 +500,67 @@ def _y_to_s(y_matrix: np.ndarray, z0_ports: np.ndarray) -> np.ndarray:
     a = sqrt_z0 @ y_matrix @ sqrt_z0
     left = ident - a
     right = ident + a
+    return _solve_linear_system(right.T, left.T, context="Y to S conversion").T
+
+
+def _solve_linear_system(
+    matrix_a: np.ndarray,
+    matrix_b: np.ndarray,
+    *,
+    context: str,
+    condition_limit: float = 1e12,
+    regularization_factor: float = 1e-12,
+) -> np.ndarray:
+    if matrix_a.size == 0:
+        return np.empty_like(matrix_b)
+
+    condition = np.linalg.cond(matrix_a)
+    if np.isfinite(condition) and condition <= condition_limit:
+        try:
+            return linalg.solve(matrix_a, matrix_b, assume_a="gen", check_finite=False)
+        except linalg.LinAlgError:
+            pass
+
+    scale = max(float(np.linalg.norm(matrix_a, ord=np.inf)), 1.0)
+    regularization = regularization_factor * scale
+    regularized = matrix_a + np.eye(matrix_a.shape[0], dtype=np.complex128) * regularization
     try:
-        inv_right = np.linalg.inv(right)
-    except np.linalg.LinAlgError:
-        inv_right = np.linalg.pinv(right)
-    return left @ inv_right
+        return linalg.solve(regularized, matrix_b, assume_a="gen", check_finite=False)
+    except linalg.LinAlgError:
+        solution, *_ = linalg.lstsq(matrix_a, matrix_b, check_finite=False)
+        if not np.all(np.isfinite(solution)):
+            raise ValueError(f"{context} failed: matrix is singular or badly conditioned.")
+        return solution
 
 
-def _interpolate_s_matrix(source_freqs: np.ndarray, s_cube: np.ndarray, target_freq: float) -> np.ndarray:
-    if target_freq <= source_freqs[0]:
-        return s_cube[0]
-    if target_freq >= source_freqs[-1]:
-        return s_cube[-1]
+def _interpolate_y_matrix(cache_entry: _TouchstoneInterpolationCache, target_freq: float) -> np.ndarray:
+    if target_freq < cache_entry.frequencies_hz[0] or target_freq > cache_entry.frequencies_hz[-1]:
+        f_min = cache_entry.frequencies_hz[0]
+        f_max = cache_entry.frequencies_hz[-1]
+        raise ValueError(
+            f"Frequency {target_freq:.12g} Hz is outside Touchstone data range [{f_min:.12g}, {f_max:.12g}] Hz."
+        )
 
-    idx = np.searchsorted(source_freqs, target_freq)
-    f0 = source_freqs[idx - 1]
-    f1 = source_freqs[idx]
-    if f1 <= f0:
-        return s_cube[idx]
-    alpha = (target_freq - f0) / (f1 - f0)
-    return (1.0 - alpha) * s_cube[idx - 1] + alpha * s_cube[idx]
+    if cache_entry.interpolation_mode == "constant":
+        return cache_entry.y_cube[0]
+
+    target_axis = math.log(target_freq) if cache_entry.use_log_axis else target_freq
+    if cache_entry.interpolation_mode == "linear":
+        idx = int(np.searchsorted(cache_entry.interpolation_axis, target_axis))
+        if idx <= 0:
+            return cache_entry.y_cube[0]
+        if idx >= cache_entry.interpolation_axis.size:
+            return cache_entry.y_cube[-1]
+        x0 = cache_entry.interpolation_axis[idx - 1]
+        x1 = cache_entry.interpolation_axis[idx]
+        if x1 <= x0:
+            return cache_entry.y_cube[idx]
+        alpha = (target_axis - x0) / (x1 - x0)
+        return (1.0 - alpha) * cache_entry.y_cube[idx - 1] + alpha * cache_entry.y_cube[idx]
+
+    real_part = cache_entry.real_interpolator(target_axis)
+    imag_part = cache_entry.imag_interpolator(target_axis)
+    return np.asarray(real_part, dtype=np.float64) + 1j * np.asarray(imag_part, dtype=np.float64)
 
 
 class _UnionFind:
