@@ -158,13 +158,39 @@
     Touchstone files and from the editor-specific blocks available in the left panel.
   </p>
   <ul>
-    <li>The left panel contains draggable blocks. It includes the loaded Touchstone files and editor blocks such as grounded and differential ports.</li>
+    <li>The left panel contains draggable blocks. It includes loaded Touchstone files plus editor blocks: GND, Port To Ground, Differential Port, Resistor, Inductor, and Capacitor.</li>
     <li>The center panel is the circuit canvas where you place blocks and create interconnections between ports.</li>
     <li>The right panel contains editor settings, including frequency sweep controls, impedance settings for supported blocks, transform controls, and export actions.</li>
     <li>All three panels are resizable by dragging the splitter bars.</li>
     <li>You can create an interconnection by clicking one port and then clicking another port.</li>
+    <li>A single port can be connected to multiple different elements. Exact duplicate links between the same two ports are blocked.</li>
     <li>You can remove an interconnection by selecting the line and pressing <b>Delete</b>, or by right-clicking the line and choosing <b>Delete connection</b>.</li>
+    <li>You can transform elements by selecting a block and using rotation/mirror controls on the right, or by right-clicking a block (or its port) and using the context menu.</li>
     <li>Supported special blocks keep their configurable impedance visible in the schematic.</li>
+  </ul>
+  <p><b>External ports are automatic</b></p>
+  <ul>
+    <li>There is no manual external-port assignment panel.</li>
+    <li>Each <b>Port To Ground</b> block creates one exported external port.</li>
+    <li>Each <b>Differential Port</b> block creates two exported external ports (+ and - sides).</li>
+    <li>External port numbering is rebuilt automatically when blocks are added or removed.</li>
+  </ul>
+  <p><b>Sweep and export</b></p>
+  <ul>
+    <li>Sweep controls are <b>Fmin</b>, <b>Fmax</b>, <b>Step</b>, and display unit (<b>Hz</b>, <b>KHz</b>, <b>MHz</b>, <b>GHz</b>).</li>
+    <li>Export computes the equivalent network and saves a Touchstone file with extension <code>.sNp</code> based on the exported port count.</li>
+    <li>During export, you can choose output data format: <b>RI</b> (Real/Imag), <b>MA</b> (Magnitude/Angle), or <b>DB</b> (dB/Angle).</li>
+    <li>During export, you can choose output frequency unit: <b>Hz</b>, <b>KHz</b>, <b>MHz</b>, or <b>GHz</b>.</li>
+  </ul>
+  <p><b>Validation rules</b></p>
+  <ul>
+    <li>Export is enabled only when at least one external port exists and the circuit is valid.</li>
+    <li>Sweep constraints: <code>Fmin &gt; 0</code>, <code>Step &gt; 0</code>, and <code>Fmax &gt;= Fmin</code>.</li>
+  </ul>
+  <p><b>Common warnings</b></p>
+  <ul>
+    <li>Differential Port blocks are exported as two single-ended ports, not as one mixed-mode port.</li>
+    <li>If the sweep step does not land exactly on Fmax, the exporter still includes Fmax as the final point.</li>
   </ul>
   <p>
     The circuit editor state is saved inside the project file together with the other open windows.
