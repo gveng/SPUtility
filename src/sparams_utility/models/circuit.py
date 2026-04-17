@@ -61,6 +61,7 @@ class CircuitBlockInstance:
     position_y: float
     block_kind: str = "touchstone"
     impedance_ohm: float = 50.0
+    symbol_scale: float = 1.0
     rotation_deg: int = 0
     mirror_horizontal: bool = False
     mirror_vertical: bool = False
@@ -75,6 +76,7 @@ class CircuitBlockInstance:
             "position_y": self.position_y,
             "block_kind": self.block_kind,
             "impedance_ohm": self.impedance_ohm,
+            "symbol_scale": self.symbol_scale,
             "rotation_deg": self.rotation_deg,
             "mirror_horizontal": self.mirror_horizontal,
             "mirror_vertical": self.mirror_vertical,
@@ -91,6 +93,7 @@ class CircuitBlockInstance:
             position_y=float(payload.get("position_y", 0.0)),
             block_kind=str(payload.get("block_kind", "touchstone")),
             impedance_ohm=float(payload.get("impedance_ohm", 50.0)),
+            symbol_scale=float(payload.get("symbol_scale", 1.0)),
             rotation_deg=int(payload.get("rotation_deg", 0)),
             mirror_horizontal=bool(payload.get("mirror_horizontal", False)),
             mirror_vertical=bool(payload.get("mirror_vertical", False)),
@@ -139,6 +142,30 @@ class ExternalPortAssignment:
 
 
 @dataclass(frozen=True)
+class DifferentialPortAssignment:
+    """Maps one external differential port to its + and − single-ended nodes."""
+
+    external_port_number: int
+    port_ref_plus: CircuitPortRef   # port 1 of port_diff block
+    port_ref_minus: CircuitPortRef  # port 2 of port_diff block
+
+    def to_dict(self) -> dict:
+        return {
+            "external_port_number": self.external_port_number,
+            "port_ref_plus": self.port_ref_plus.to_dict(),
+            "port_ref_minus": self.port_ref_minus.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "DifferentialPortAssignment":
+        return cls(
+            external_port_number=int(payload.get("external_port_number", 0)),
+            port_ref_plus=CircuitPortRef.from_dict(payload.get("port_ref_plus", {})),
+            port_ref_minus=CircuitPortRef.from_dict(payload.get("port_ref_minus", {})),
+        )
+
+
+@dataclass(frozen=True)
 class CircuitValidationIssue:
     message: str
 
@@ -148,6 +175,7 @@ class CircuitDocument:
     instances: List[CircuitBlockInstance] = field(default_factory=list)
     connections: List[CircuitConnection] = field(default_factory=list)
     external_ports: List[ExternalPortAssignment] = field(default_factory=list)
+    differential_ports: List[DifferentialPortAssignment] = field(default_factory=list)
     sweep: FrequencySweepSpec = field(default_factory=FrequencySweepSpec)
 
     def next_instance_id(self) -> str:
@@ -174,6 +202,7 @@ class CircuitDocument:
         position_y: float,
         block_kind: str = "touchstone",
         impedance_ohm: float = 50.0,
+        symbol_scale: float = 1.0,
         rotation_deg: int = 0,
         mirror_horizontal: bool = False,
         mirror_vertical: bool = False,
@@ -187,6 +216,7 @@ class CircuitDocument:
             position_y=position_y,
             block_kind=block_kind,
             impedance_ohm=impedance_ohm,
+            symbol_scale=symbol_scale,
             rotation_deg=rotation_deg,
             mirror_horizontal=mirror_horizontal,
             mirror_vertical=mirror_vertical,
@@ -208,6 +238,7 @@ class CircuitDocument:
                 position_y=y,
                 block_kind=instance.block_kind,
                 impedance_ohm=instance.impedance_ohm,
+                symbol_scale=instance.symbol_scale,
                 rotation_deg=instance.rotation_deg,
                 mirror_horizontal=instance.mirror_horizontal,
                 mirror_vertical=instance.mirror_vertical,
@@ -227,6 +258,27 @@ class CircuitDocument:
                 position_y=instance.position_y,
                 block_kind=instance.block_kind,
                 impedance_ohm=impedance_ohm,
+                symbol_scale=instance.symbol_scale,
+                rotation_deg=instance.rotation_deg,
+                mirror_horizontal=instance.mirror_horizontal,
+                mirror_vertical=instance.mirror_vertical,
+            )
+            return
+
+    def update_instance_symbol_scale(self, instance_id: str, symbol_scale: float) -> None:
+        for index, instance in enumerate(self.instances):
+            if instance.instance_id != instance_id:
+                continue
+            self.instances[index] = CircuitBlockInstance(
+                instance_id=instance.instance_id,
+                source_file_id=instance.source_file_id,
+                display_label=instance.display_label,
+                nports=instance.nports,
+                position_x=instance.position_x,
+                position_y=instance.position_y,
+                block_kind=instance.block_kind,
+                impedance_ohm=instance.impedance_ohm,
+                symbol_scale=max(0.5, min(3.0, symbol_scale)),
                 rotation_deg=instance.rotation_deg,
                 mirror_horizontal=instance.mirror_horizontal,
                 mirror_vertical=instance.mirror_vertical,
@@ -253,6 +305,7 @@ class CircuitDocument:
                 position_y=instance.position_y,
                 block_kind=instance.block_kind,
                 impedance_ohm=instance.impedance_ohm,
+                symbol_scale=instance.symbol_scale,
                 rotation_deg=rotation_deg,
                 mirror_horizontal=mirror_horizontal,
                 mirror_vertical=mirror_vertical,
@@ -282,6 +335,7 @@ class CircuitDocument:
 
     def rebuild_external_ports_from_instances(self) -> None:
         external: List[ExternalPortAssignment] = []
+        differential: List[DifferentialPortAssignment] = []
         index = 1
         for instance in self.instances:
             if instance.block_kind == "port_ground":
@@ -294,16 +348,17 @@ class CircuitDocument:
                 index += 1
                 continue
             if instance.block_kind == "port_diff":
-                for port_number in (1, 2):
-                    external.append(
-                        ExternalPortAssignment(
-                            external_port_number=index,
-                            port_ref=CircuitPortRef(instance_id=instance.instance_id, port_number=port_number),
-                        )
+                differential.append(
+                    DifferentialPortAssignment(
+                        external_port_number=index,
+                        port_ref_plus=CircuitPortRef(instance_id=instance.instance_id, port_number=1),
+                        port_ref_minus=CircuitPortRef(instance_id=instance.instance_id, port_number=2),
                     )
-                    index += 1
+                )
+                index += 1
                 continue
         self.external_ports = external
+        self.differential_ports = differential
 
     def is_port_connected(self, port_ref: CircuitPortRef) -> bool:
         key = port_ref.key()
@@ -313,7 +368,12 @@ class CircuitDocument:
 
     def is_port_exported(self, port_ref: CircuitPortRef) -> bool:
         key = port_ref.key()
-        return any(item.port_ref.key() == key for item in self.external_ports)
+        if any(item.port_ref.key() == key for item in self.external_ports):
+            return True
+        return any(
+            item.port_ref_plus.key() == key or item.port_ref_minus.key() == key
+            for item in self.differential_ports
+        )
 
     def get_instance(self, instance_id: str) -> CircuitBlockInstance | None:
         for instance in self.instances:
@@ -344,6 +404,14 @@ class CircuitDocument:
             else:
                 seen_external[item.external_port_number] = item.port_ref.key()
 
+        for item in self.differential_ports:
+            if item.external_port_number < 1:
+                issues.append(CircuitValidationIssue("External port numbers must start from 1."))
+            elif item.external_port_number in seen_external:
+                issues.append(CircuitValidationIssue("External port numbers must be unique."))
+            else:
+                seen_external[item.external_port_number] = item.port_ref_plus.key()
+
         for instance in self.instances:
             if instance.impedance_ohm <= 0:
                 issues.append(
@@ -358,6 +426,7 @@ class CircuitDocument:
             "instances": [item.to_dict() for item in self.instances],
             "connections": [item.to_dict() for item in self.connections],
             "external_ports": [item.to_dict() for item in self.external_ports],
+            "differential_ports": [item.to_dict() for item in self.differential_ports],
             "sweep": self.sweep.to_dict(),
         }
 
@@ -377,6 +446,11 @@ class CircuitDocument:
             external_ports=[
                 ExternalPortAssignment.from_dict(item)
                 for item in payload.get("external_ports", [])
+                if isinstance(item, dict)
+            ],
+            differential_ports=[
+                DifferentialPortAssignment.from_dict(item)
+                for item in payload.get("differential_ports", [])
                 if isinstance(item, dict)
             ],
             sweep=FrequencySweepSpec.from_dict(payload.get("sweep", {})),

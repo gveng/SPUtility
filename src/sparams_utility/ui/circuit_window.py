@@ -4,10 +4,9 @@ import json
 from typing import Dict
 
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QDrag, QKeySequence, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics, QKeySequence, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -17,6 +16,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsLineItem,
     QGraphicsObject,
+    QGraphicsPolygonItem,
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
@@ -40,6 +40,7 @@ from sparams_utility.models.state import AppState
 _MIME_BLOCK_DEF = "application/x-sparams-block-def"
 _BLOCK_WIDTH = 92.0
 _PORT_RADIUS = 6.0
+_SCHEMATIC_BG = QColor("#f7f7f7")
 _FREQUENCY_UNIT_SCALE = {
     "Hz": 1.0,
     "KHz": 1e3,
@@ -50,6 +51,21 @@ _FREQUENCY_UNIT_SCALE = {
 
 def _contrast_foreground(background: QColor) -> QColor:
     return QColor("#f8fafc") if background.lightnessF() < 0.5 else QColor("#0f172a")
+
+
+def _hex_port_polygon(center_x: float, center_y: float, radius: float) -> QPolygonF:
+    shoulder = radius * 0.62
+    half_height = radius * 0.9
+    return QPolygonF(
+        [
+            QPointF(center_x - radius, center_y),
+            QPointF(center_x - shoulder, center_y - half_height),
+            QPointF(center_x + shoulder, center_y - half_height),
+            QPointF(center_x + radius, center_y),
+            QPointF(center_x + shoulder, center_y + half_height),
+            QPointF(center_x - shoulder, center_y + half_height),
+        ]
+    )
 
 
 def _block_value_suffix(block_kind: str) -> str:
@@ -74,6 +90,21 @@ def _block_value_label(block_kind: str, value: float) -> str:
     return f"{value:g} Ohm"
 
 
+def _label_band_height_for_text(text: str, width: float, point_size: float, *, minimum: float = 18.0) -> float:
+    font = QFont()
+    font.setPointSizeF(point_size)
+    metrics = QFontMetrics(font)
+    text_rect = metrics.boundingRect(
+        0,
+        0,
+        max(24, int(width - 6.0)),
+        1000,
+        int(Qt.TextWordWrap | Qt.AlignCenter),
+        text,
+    )
+    return max(minimum, float(text_rect.height()) + 8.0)
+
+
 class BlockPreviewWidget(QWidget):
     def __init__(
         self,
@@ -89,52 +120,89 @@ class BlockPreviewWidget(QWidget):
         self._nports = nports
         self._block_kind = block_kind
         self._impedance_ohm = impedance_ohm
-        self.setMinimumHeight(max(56, 28 + max(nports, 2) * 10))
+        if block_kind == "touchstone":
+            body_h = max(44, (max(nports, 2) + 1) * 14)
+            self.setMinimumHeight(body_h + 40)
+        elif block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
+            self.setMinimumHeight(84)
+        elif block_kind in {"port_diff", "port_ground", "gnd"}:
+            self.setMinimumHeight(80)
+        else:
+            self.setMinimumHeight(max(64, 32 + max(nports, 2) * 10))
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(170, max(56, 28 + max(self._nports, 2) * 10))
+        if self._block_kind == "touchstone":
+            body_h = max(44, (max(self._nports, 2) + 1) * 14)
+            return QSize(170, body_h + 40)
+        if self._block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
+            return QSize(170, 84)
+        if self._block_kind in {"port_diff", "port_ground", "gnd"}:
+            return QSize(170, 80)
+        return QSize(170, max(64, 32 + max(self._nports, 2) * 10))
 
     def paintEvent(self, event) -> None:  # noqa: N802, ANN001
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.fillRect(self.rect(), _SCHEMATIC_BG)
 
-        rect = self.rect().adjusted(18, 8, -18, -20)
-        painter.setPen(QPen(QColor("#1f2937"), 1.5))
-        if self._block_kind not in {"lumped_r", "lumped_l", "lumped_c"}:
-            painter.setBrush(QBrush(QColor("#e5e7eb")))
+        is_lumped = self._block_kind in {"lumped_r", "lumped_l", "lumped_c"}
+        if is_lumped:
+            cx = self.rect().center().x()
+            rect = QRectF(cx - _BLOCK_WIDTH / 2.0, 4.0, _BLOCK_WIDTH, 44.0)
+        elif self._block_kind == "port_diff":
+            cx = self.rect().center().x()
+            rect = QRectF(cx - _BLOCK_WIDTH / 2.0, 4.0, _BLOCK_WIDTH, 44.0)
+        elif self._block_kind == "port_ground":
+            cx = self.rect().center().x()
+            rect = QRectF(cx - _BLOCK_WIDTH / 2.0, 4.0, _BLOCK_WIDTH, 44.0)
+        elif self._block_kind == "gnd":
+            cx = self.rect().center().x()
+            rect = QRectF(cx - _BLOCK_WIDTH / 2.0, 4.0, _BLOCK_WIDTH, 44.0)
+        elif self._block_kind == "touchstone":
+            cx = self.rect().center().x()
+            body_h = max(44.0, (max(self._nports, 2) + 1) * 14.0)
+            rect = QRectF(cx - _BLOCK_WIDTH / 2.0, 4.0, _BLOCK_WIDTH, body_h)
+        else:
+            rect = self.rect().adjusted(18, 8, -18, -28)
+        painter.setPen(QPen(QColor("#1e40af"), 1.6))
+        if self._block_kind not in {"lumped_r", "lumped_l", "lumped_c", "gnd", "port_diff", "port_ground", "touchstone"}:
+            painter.setBrush(QBrush(QColor("#60a5fa")))
             painter.drawRoundedRect(rect, 6.0, 6.0)
 
         font = painter.font()
-        font.setPointSizeF(max(7.0, font.pointSizeF() - 1.5))
+        font.setPointSizeF(max(7.2, font.pointSizeF() - 1.6))
+        font.setBold(False)
         painter.setFont(font)
-        painter.drawText(QRectF(rect.left(), rect.bottom() + 2.0, rect.width(), 14.0), Qt.AlignCenter, self._label)
+        painter.setPen(QPen(QColor("#0f172a"), 1.0))
         secondary = _block_value_label(self._block_kind, self._impedance_ohm)
         if self._block_kind == "touchstone":
             secondary = f"{self._nports} ports"
         if self._block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
-            painter.drawText(QRectF(rect.left(), rect.bottom() - 12.0, rect.width(), 14.0), Qt.AlignCenter, secondary)
+            painter.drawText(QRectF(rect.left(), rect.bottom() + 2.0, rect.width(), 18.0), Qt.AlignCenter, secondary)
+        if self._block_kind != "touchstone":
+            painter.drawText(QRectF(rect.left(), rect.bottom() + 18.0, rect.width(), 18.0), Qt.AlignCenter, self._label)
 
+        if self._block_kind == "touchstone":
+            self._draw_touchstone_preview(painter, rect)
+            return
+        if self._block_kind == "lumped_r":
+            self._draw_lumped_symbol(
+                painter,
+                rect,
+                foreground_color=QColor("#1e293b"),
+            )
+            return
+        if self._block_kind == "port_diff":
+            self._draw_differential_port_symbol(painter, rect)
+            return
         if self._block_kind == "port_ground":
             self._draw_ground_port_symbol(painter, rect)
             return
         if self._block_kind == "gnd":
             self._draw_gnd_symbol(painter, rect)
             return
-        if self._block_kind == "port_diff":
-            self._draw_differential_port_symbol(painter, rect)
-            return
-        if self._block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
-            lumped_bg = QColor("#0f172a")
-            lumped_fg = _contrast_foreground(lumped_bg)
-            painter.setPen(QPen(lumped_bg, 1.2))
-            painter.setBrush(QBrush(lumped_bg))
-            painter.drawRoundedRect(rect.adjusted(6, 6, -6, -18), 6.0, 6.0)
-            self._draw_lumped_symbol(
-                painter,
-                rect.adjusted(6, 6, -6, -18),
-                foreground_color=lumped_fg,
-            )
+        if self._block_kind in {"lumped_l", "lumped_c"}:
             return
 
         left_count = (self._nports + 1) // 2
@@ -152,98 +220,194 @@ class BlockPreviewWidget(QWidget):
                 label_rect = QRectF(rect.right() - 38.0, rect.top(), 28.0, rect.height())
             y = rect.top() + (rect.height() / (span + 1)) * slot
             painter.setBrush(QBrush(QColor("#ffffff")))
-            painter.drawEllipse(QPointF(float(x), float(y)), _PORT_RADIUS, _PORT_RADIUS)
+            painter.drawPolygon(_hex_port_polygon(float(x), float(y), _PORT_RADIUS))
             painter.drawText(
                 QRectF(label_rect.left(), y - 10.0, label_rect.width(), 20.0),
                 Qt.AlignCenter,
                 str(idx),
             )
 
-    def _draw_ground_port_symbol(self, painter: QPainter, rect: QRectF) -> None:
-        center_y = rect.center().y() + 8.0
-        port_x = rect.left()
-        body_x = rect.left() + 48.0
+    def _draw_touchstone_preview(self, painter: QPainter, rect: QRectF) -> None:
+        fg = QColor("#1e293b")
+        # Outlined rounded rect (same style as port_diff)
+        painter.setPen(QPen(fg, 2.0))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, 4.0, 4.0)
+        # Port hex markers on left/right edges with port numbers inside
+        left_count = (self._nports + 1) // 2
+        right_count = self._nports - left_count
         painter.setBrush(QBrush(QColor("#ffffff")))
-        painter.drawEllipse(QPointF(float(port_x), float(center_y)), _PORT_RADIUS, _PORT_RADIUS)
-        painter.drawLine(QPointF(port_x, center_y), QPointF(body_x, center_y))
-        ground_x = rect.center().x()
-        ground_top = center_y + 8.0
-        painter.drawLine(QPointF(body_x, center_y), QPointF(ground_x, center_y))
-        painter.drawLine(QPointF(ground_x, center_y), QPointF(ground_x, ground_top + 6.0))
-        painter.drawLine(QPointF(ground_x - 12.0, ground_top + 6.0), QPointF(ground_x + 12.0, ground_top + 6.0))
-        painter.drawLine(QPointF(ground_x - 8.0, ground_top + 11.0), QPointF(ground_x + 8.0, ground_top + 11.0))
-        painter.drawLine(QPointF(ground_x - 4.0, ground_top + 16.0), QPointF(ground_x + 4.0, ground_top + 16.0))
-        painter.drawText(QRectF(rect.left() + 10.0, center_y - 14.0, 28.0, 20.0), Qt.AlignCenter, "1")
+        for idx in range(1, self._nports + 1):
+            if idx <= left_count:
+                slot = idx
+                span = max(left_count, 1)
+                x = rect.left()
+                label_rect = QRectF(rect.left() + 8.0, 0.0, 20.0, 18.0)
+            else:
+                slot = idx - left_count
+                span = max(right_count, 1)
+                x = rect.right()
+                label_rect = QRectF(rect.right() - 28.0, 0.0, 20.0, 18.0)
+            y = rect.top() + (rect.height() / (span + 1)) * slot
+            painter.drawPolygon(_hex_port_polygon(float(x), float(y), _PORT_RADIUS))
+            painter.setPen(QPen(fg, 1.0))
+            painter.drawText(
+                QRectF(label_rect.left(), y - 9.0, label_rect.width(), 18.0),
+                Qt.AlignCenter,
+                str(idx),
+            )
+            painter.setPen(QPen(fg, 2.0))
+        # File name below rect — use word wrap to ensure full visibility
+        font = painter.font()
+        font.setPointSizeF(max(6.5, font.pointSizeF() - 0.5))
+        painter.setFont(font)
+        painter.setPen(QPen(QColor("#0f172a"), 1.0))
+        label_area = QRectF(rect.left() - 10.0, rect.bottom() + 2.0, rect.width() + 20.0, 36.0)
+        painter.drawText(label_area, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, self._label)
+
+    def _draw_ground_port_symbol(self, painter: QPainter, rect: QRectF) -> None:
+        fg = QColor("#1e293b")
+        scale = 1.0
+        y = rect.center().y()
+        x0 = rect.left()
+        total_w = _BLOCK_WIDTH * scale
+        right_end = x0 + total_w
+        terminal_length = 20.0 * scale
+        x1 = x0 + terminal_length
+        x2 = right_end - terminal_length
+        painter.setPen(QPen(fg, 2.0))
+        # Hex port marker on left
+        painter.setBrush(QBrush(QColor("#ffffff")))
+        painter.drawPolygon(_hex_port_polygon(float(x0), float(y), _PORT_RADIUS))
+        # Box leaving 50% of terminals outside
+        half_term = terminal_length / 2.0
+        box = QRectF(x1 - half_term, rect.top() + 2.0, (x2 + half_term) - (x1 - half_term), rect.height() - 4.0)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(box, 3.0, 3.0)
+        # Left terminal lead
+        painter.drawLine(QPointF(x0, y), QPointF(x1, y))
+        # Right terminal lead to GND
+        gnd_x = right_end
+        painter.drawLine(QPointF(x2, y), QPointF(gnd_x, y))
+        # Horizontal zigzag
+        zig_segments = 7
+        step = (x2 - x1) / zig_segments
+        amplitude = abs(step) * 1.7320508076 * 0.75
+        points = [
+            QPointF(x1, y),
+            QPointF(x1 + step, y - amplitude),
+            QPointF(x1 + 2 * step, y + amplitude),
+            QPointF(x1 + 3 * step, y - amplitude),
+            QPointF(x1 + 4 * step, y + amplitude),
+            QPointF(x1 + 5 * step, y - amplitude),
+            QPointF(x1 + 6 * step, y + amplitude),
+            QPointF(x2, y),
+        ]
+        for idx in range(len(points) - 1):
+            painter.drawLine(points[idx], points[idx + 1])
+        # GND symbol at right end
+        gw = 10.0 * scale
+        painter.drawLine(QPointF(gnd_x, y - gw), QPointF(gnd_x, y + gw))
+        painter.drawLine(QPointF(gnd_x + 3.0, y - gw * 0.6), QPointF(gnd_x + 3.0, y + gw * 0.6))
+        painter.drawLine(QPointF(gnd_x + 6.0, y - gw * 0.25), QPointF(gnd_x + 6.0, y + gw * 0.25))
+        # Impedance label below
+        painter.setPen(QPen(QColor("#0f172a"), 1.0))
+        font = painter.font()
+        font.setPointSizeF(max(6.8, font.pointSizeF() - 2.0))
+        painter.setFont(font)
+        label = _block_value_label(self._block_kind, self._impedance_ohm)
+        painter.drawText(QRectF(rect.left(), rect.bottom() + 2.0, rect.width(), 18.0), Qt.AlignCenter, label)
 
     def _draw_differential_port_symbol(self, painter: QPainter, rect: QRectF) -> None:
-        x = rect.left()
-        y_top = rect.center().y() - 12.0
-        y_bottom = rect.center().y() + 12.0
-        body_left = rect.left() + 48.0
-        body_right = rect.right() - 26.0
-        painter.setBrush(QBrush(QColor("#ffffff")))
-        painter.drawEllipse(QPointF(float(x), float(y_top)), _PORT_RADIUS, _PORT_RADIUS)
-        painter.drawEllipse(QPointF(float(x), float(y_bottom)), _PORT_RADIUS, _PORT_RADIUS)
-        painter.drawLine(QPointF(x, y_top), QPointF(body_left, y_top))
-        painter.drawLine(QPointF(x, y_bottom), QPointF(body_left, y_bottom))
-        painter.drawLine(QPointF(body_left, y_top), QPointF(body_right, y_top))
-        painter.drawLine(QPointF(body_left, y_bottom), QPointF(body_right, y_bottom))
-        painter.drawText(QRectF(rect.left() + 10.0, y_top - 12.0, 28.0, 20.0), Qt.AlignCenter, "+")
-        painter.drawText(QRectF(rect.left() + 10.0, y_bottom - 12.0, 28.0, 20.0), Qt.AlignCenter, "-")
-
-    def _draw_gnd_symbol(self, painter: QPainter, rect: QRectF) -> None:
-        y = rect.center().y() + 8.0
-        x_port = rect.left()
-        x_ground = rect.center().x()
-        painter.setBrush(QBrush(QColor("#ffffff")))
-        painter.drawEllipse(QPointF(float(x_port), float(y)), _PORT_RADIUS, _PORT_RADIUS)
-        painter.drawLine(QPointF(x_port, y), QPointF(x_ground, y))
-        painter.drawLine(QPointF(x_ground - 12.0, y + 6.0), QPointF(x_ground + 12.0, y + 6.0))
-        painter.drawLine(QPointF(x_ground - 8.0, y + 11.0), QPointF(x_ground + 8.0, y + 11.0))
-        painter.drawLine(QPointF(x_ground - 4.0, y + 16.0), QPointF(x_ground + 4.0, y + 16.0))
-
-    def _draw_lumped_symbol(self, painter: QPainter, rect: QRectF, *, foreground_color: QColor) -> None:
-        y = rect.center().y() + 10.0
+        fg = QColor("#1e293b")
+        y = rect.center().y()
         x0 = rect.left()
-        x1 = rect.left() + 38.0
-        x2 = rect.right() - 22.0
         x3 = rect.right()
-        painter.setPen(QPen(foreground_color, 2.0))
-        painter.setBrush(QBrush(foreground_color))
-        painter.drawEllipse(QPointF(float(x0), float(y)), _PORT_RADIUS, _PORT_RADIUS)
-        painter.drawEllipse(QPointF(float(x3), float(y)), _PORT_RADIUS, _PORT_RADIUS)
+        terminal_length = 20.0
+        x1 = x0 + terminal_length
+        x2 = x3 - terminal_length
+        painter.setPen(QPen(fg, 2.0))
+        # Hex port markers
+        painter.setBrush(QBrush(QColor("#ffffff")))
+        painter.drawPolygon(_hex_port_polygon(float(x0), float(y), _PORT_RADIUS))
+        painter.drawPolygon(_hex_port_polygon(float(x3), float(y), _PORT_RADIUS))
+        # Box leaving 50% of terminals outside
+        half_term = terminal_length / 2.0
+        box = QRectF(x1 - half_term, rect.top() + 2.0, (x2 + half_term) - (x1 - half_term), rect.height() - 4.0)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(box, 4.0, 4.0)
+        # Terminal leads
         painter.drawLine(QPointF(x0, y), QPointF(x1, y))
         painter.drawLine(QPointF(x2, y), QPointF(x3, y))
-        if self._block_kind == "lumped_r":
-            step = (x2 - x1) / 6.0
-            points = [
-                QPointF(x1, y),
-                QPointF(x1 + step, y - 8.0),
-                QPointF(x1 + 2 * step, y + 8.0),
-                QPointF(x1 + 3 * step, y - 8.0),
-                QPointF(x1 + 4 * step, y + 8.0),
-                QPointF(x1 + 5 * step, y - 8.0),
-                QPointF(x2, y),
-            ]
-            for idx in range(len(points) - 1):
-                painter.drawLine(points[idx], points[idx + 1])
-        elif self._block_kind == "lumped_l":
-            loops = 4
-            span = (x2 - x1) / loops
-            for idx in range(loops):
-                center = x1 + (idx + 0.5) * span
-                painter.drawArc(
-                    QRectF(center - span / 2.0, y - 8.0, span, 16.0),
-                    0,
-                    180 * 16,
-                )
-        elif self._block_kind == "lumped_c":
-            plate_gap = 8.0
-            cx = (x1 + x2) / 2.0
-            painter.drawLine(QPointF(x1, y), QPointF(cx - plate_gap, y))
-            painter.drawLine(QPointF(cx + plate_gap, y), QPointF(x2, y))
-            painter.drawLine(QPointF(cx - plate_gap, y - 12.0), QPointF(cx - plate_gap, y + 12.0))
-            painter.drawLine(QPointF(cx + plate_gap, y - 12.0), QPointF(cx + plate_gap, y + 12.0))
+        # Horizontal zigzag (same as R)
+        zig_segments = 7
+        step = (x2 - x1) / zig_segments
+        amplitude = abs(step) * 1.7320508076 * 0.75  # tan(60 deg), 75% length
+        points = [
+            QPointF(x1, y),
+            QPointF(x1 + step, y - amplitude),
+            QPointF(x1 + 2 * step, y + amplitude),
+            QPointF(x1 + 3 * step, y - amplitude),
+            QPointF(x1 + 4 * step, y + amplitude),
+            QPointF(x1 + 5 * step, y - amplitude),
+            QPointF(x1 + 6 * step, y + amplitude),
+            QPointF(x2, y),
+        ]
+        for idx in range(len(points) - 1):
+            painter.drawLine(points[idx], points[idx + 1])
+        # Impedance label below
+        painter.setPen(QPen(QColor("#0f172a"), 1.0))
+        font = painter.font()
+        font.setPointSizeF(max(6.8, font.pointSizeF() - 2.0))
+        painter.setFont(font)
+        label = _block_value_label(self._block_kind, self._impedance_ohm)
+        painter.drawText(QRectF(rect.left(), rect.bottom() + 2.0, rect.width(), 18.0), Qt.AlignCenter, label)
+
+    def _draw_gnd_symbol(self, painter: QPainter, rect: QRectF) -> None:
+        fg = QColor("#1e293b")
+        y = rect.center().y()
+        x0 = rect.left()
+        gnd_x = x0 + _BLOCK_WIDTH * 0.3
+        painter.setPen(QPen(fg, 2.0))
+        # Hex port marker on left
+        painter.setBrush(QBrush(QColor("#ffffff")))
+        painter.drawPolygon(_hex_port_polygon(float(x0), float(y), _PORT_RADIUS))
+        # Straight line from port to GND
+        painter.drawLine(QPointF(x0, y), QPointF(gnd_x, y))
+        # GND symbol at right end
+        gw = 10.0
+        painter.drawLine(QPointF(gnd_x, y - gw), QPointF(gnd_x, y + gw))
+        painter.drawLine(QPointF(gnd_x + 3.0, y - gw * 0.6), QPointF(gnd_x + 3.0, y + gw * 0.6))
+        painter.drawLine(QPointF(gnd_x + 6.0, y - gw * 0.25), QPointF(gnd_x + 6.0, y + gw * 0.25))
+
+    def _draw_lumped_symbol(self, painter: QPainter, rect: QRectF, *, foreground_color: QColor) -> None:
+        y = rect.center().y()
+        x0 = rect.left()
+        x3 = rect.right()
+        terminal_length = 20.0
+        x1 = x0 + terminal_length
+        x2 = x3 - terminal_length
+        painter.setPen(QPen(foreground_color, 2.0))
+        painter.setBrush(QBrush(QColor("#ffffff")))
+        painter.drawPolygon(_hex_port_polygon(float(x0), float(y), _PORT_RADIUS))
+        painter.drawPolygon(_hex_port_polygon(float(x3), float(y), _PORT_RADIUS))
+        painter.drawLine(QPointF(x0, y), QPointF(x1, y))
+        painter.drawLine(QPointF(x2, y), QPointF(x3, y))
+        zig_segments = 7
+        step = (x2 - x1) / zig_segments
+        amplitude = abs(step) * 1.7320508076 * 0.75  # tan(60 deg), 75% length
+        points = [
+            QPointF(x1, y),
+            QPointF(x1 + step, y - amplitude),
+            QPointF(x1 + 2 * step, y + amplitude),
+            QPointF(x1 + 3 * step, y - amplitude),
+            QPointF(x1 + 4 * step, y + amplitude),
+            QPointF(x1 + 5 * step, y - amplitude),
+            QPointF(x1 + 6 * step, y + amplitude),
+            QPointF(x2, y),
+        ]
+        for idx in range(len(points) - 1):
+            painter.drawLine(points[idx], points[idx + 1])
 
 
 def _build_palette_payload(
@@ -319,7 +483,16 @@ class FilePaletteList(QListWidget):
         self.setSelectionMode(QListWidget.SingleSelection)
         self.setSpacing(6)
         self.setUniformItemSizes(False)
-        self.setStyleSheet("QListWidget::item { border: none; padding: 0px; }")
+        self.setStyleSheet(
+            "QListWidget {"
+            " background-color: #f7f7f7;"
+            " color: #0f172a;"
+            " border: 1px solid #d1d5db;"
+            "}"
+            "QListWidget::item { border: none; padding: 0px; }"
+            "QListWidget::item:selected { background-color: #dbeafe; }"
+            "QListWidget::item:hover { background-color: #e5e7eb; }"
+        )
 
     def startDrag(self, supported_actions) -> None:  # noqa: ARG002
         item = self.currentItem()
@@ -396,9 +569,9 @@ class CircuitCanvasView(QGraphicsView):
         super().contextMenuEvent(event)
 
 
-class PortItem(QGraphicsEllipseItem):
+class PortItem(QGraphicsPolygonItem):
     def __init__(self, owner: "CircuitBlockItem", port_number: int, x: float, y: float) -> None:
-        super().__init__(-_PORT_RADIUS, -_PORT_RADIUS, _PORT_RADIUS * 2, _PORT_RADIUS * 2, owner)
+        super().__init__(_hex_port_polygon(0.0, 0.0, _PORT_RADIUS), owner)
         self.owner = owner
         self.port_number = port_number
         self.setPos(x, y)
@@ -464,8 +637,24 @@ class CircuitBlockItem(QGraphicsObject):
         self._scene_ref = scene
         self.instance = instance
         self._port_items: Dict[int, PortItem] = {}
-        self._body_height = 44.0 if instance.block_kind in {"lumped_r", "lumped_l", "lumped_c"} else max(48.0, 18.0 + (max(instance.nports, 2) * 10.0))
-        self._label_band_height = 18.0
+        self._port_label: str = ""
+        self._symbol_scale = max(0.5, min(3.0, float(getattr(instance, "symbol_scale", 1.0))))
+        self._is_touchstone = instance.block_kind == "touchstone"
+        self._block_width = _BLOCK_WIDTH * self._symbol_scale
+        if instance.block_kind in {"lumped_r", "lumped_l", "lumped_c", "port_diff", "port_ground", "gnd"}:
+            self._body_height = 44.0 * self._symbol_scale
+        elif instance.block_kind == "touchstone":
+            self._body_height = max(44.0, (max(instance.nports, 2) + 1) * 14.0) * self._symbol_scale
+        else:
+            self._body_height = max(48.0 * self._symbol_scale, (18.0 + (max(instance.nports, 2) * 10.0)) * self._symbol_scale)
+        label_text = instance.display_label
+        if instance.block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
+            label_text = _block_value_label(instance.block_kind, instance.impedance_ohm)
+        self._label_band_height = (
+            _label_band_height_for_text(label_text, self._block_width, 7.2, minimum=18.0)
+            if instance.block_kind != "gnd"
+            else 0.0
+        )
         self._height = self._body_height + self._label_band_height
         self.setFlags(
             QGraphicsItem.ItemIsMovable
@@ -498,7 +687,7 @@ class CircuitBlockItem(QGraphicsObject):
 
     def _mx(self, x: float) -> float:
         if self.instance.mirror_horizontal:
-            return _BLOCK_WIDTH - x
+            return self._block_width - x
         return x
 
     def _my(self, y: float) -> float:
@@ -513,8 +702,8 @@ class CircuitBlockItem(QGraphicsObject):
             return 0.0, self._body_height / 2.0
         if self.instance.block_kind == "port_diff":
             if port_number == 1:
-                return 0.0, self._body_height / 2.0 - 10.0
-            return 0.0, self._body_height / 2.0 + 10.0
+                return 0.0, self._body_height / 2.0
+            return self._block_width, self._body_height / 2.0
 
         left_count = (self.instance.nports + 1) // 2
         right_count = self.instance.nports - left_count
@@ -525,7 +714,7 @@ class CircuitBlockItem(QGraphicsObject):
         else:
             slot = port_number - left_count
             span = max(right_count, 1)
-            x = _BLOCK_WIDTH
+            x = self._block_width
         y = (self._body_height / (span + 1)) * slot
         return x, y
 
@@ -535,128 +724,199 @@ class CircuitBlockItem(QGraphicsObject):
             port_item.setPos(self._mx(base_x), self._my(base_y))
 
     def boundingRect(self) -> QRectF:  # noqa: N802
-        return QRectF(0.0, 0.0, _BLOCK_WIDTH, self._height)
+        return QRectF(0.0, 0.0, self._block_width, self._height)
 
     def paint(self, painter, option, widget=None) -> None:  # noqa: ANN001, ARG002
-        rect = QRectF(0.0, 0.0, _BLOCK_WIDTH, self._body_height)
-        fill = QColor("#dbeafe") if self.isSelected() else QColor("#e5e7eb")
-        painter.setPen(QPen(QColor("#1f2937"), 1.4))
-        if self.instance.block_kind not in {"lumped_r", "lumped_l", "lumped_c"}:
+        rect = QRectF(0.0, 0.0, self._block_width, self._body_height)
+        symbol_font = painter.font()
+        symbol_font.setPointSizeF(max(6.8, symbol_font.pointSizeF() - 2.0))
+        symbol_font.setBold(False)
+        painter.setFont(symbol_font)
+        
+        # Handle GND specially
+        if self.instance.block_kind == "gnd":
+            self._draw_gnd_canvas(painter, rect)
+            return
+        
+        # Draw background for non-lumped, non-GND blocks
+        fg = QColor("#1e293b")
+        fill = QColor("#3b82f6") if self.isSelected() else QColor("#60a5fa")
+        painter.setPen(QPen(QColor("#1e40af"), 1.6))
+        if self.instance.block_kind == "touchstone":
+            # Outlined rounded rect (same style as port blocks)
+            painter.setPen(QPen(fg, 2.0))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect, 4.0, 4.0)
+        elif self.instance.block_kind not in {"lumped_r", "lumped_l", "lumped_c", "gnd", "port_diff", "port_ground"}:
             painter.setBrush(QBrush(fill))
-            painter.drawRoundedRect(rect, 5.0, 5.0)
-        if self.instance.block_kind == "port_ground":
-            self._draw_ground_symbol(painter, rect)
-        elif self.instance.block_kind == "gnd":
-            self._draw_gnd_symbol(painter, rect)
+            painter.drawRoundedRect(rect, 6.0, 6.0)
+        
+        if self.instance.block_kind == "touchstone":
+            # Port numbers inside the box
+            painter.setPen(QPen(fg, 1.0))
+            for port_number, port_item in self._port_items.items():
+                point = port_item.pos()
+                label_x = 6.0 if point.x() <= 0 else rect.width() - 22.0
+                painter.drawText(QRectF(label_x, point.y() - 9.0, 20.0, 18.0), Qt.AlignCenter, str(port_number))
+        elif self.instance.block_kind == "lumped_r":
+            self._draw_lumped_symbol(painter, rect)
         elif self.instance.block_kind == "port_diff":
             self._draw_diff_symbol(painter, rect)
-        elif self.instance.block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
-            self._draw_lumped_symbol(painter, rect)
+        elif self.instance.block_kind == "port_ground":
+            self._draw_ground_symbol(painter, rect)
+        elif self.instance.block_kind in {"lumped_l", "lumped_c"}:
+            pass
         else:
             for port_number, port_item in self._port_items.items():
                 point = port_item.pos()
-                label_x = 8.0 if point.x() <= 0 else rect.width() - 24.0
-                painter.drawText(QRectF(label_x, point.y() - 8.0, 16.0, 16.0), Qt.AlignCenter, str(port_number))
+                label_x = 6.0 if point.x() <= 0 else rect.width() - 22.0
+                painter.drawText(QRectF(label_x, point.y() - 9.0, 20.0, 18.0), Qt.AlignCenter, str(port_number))
 
+        # Draw label text below block
         font = painter.font()
-        font.setPointSizeF(max(7.0, font.pointSizeF() - 1.5))
+        font.setPointSizeF(max(7.2, font.pointSizeF() - 1.2))
+        font.setBold(False)
         painter.setFont(font)
+        painter.setPen(QPen(QColor("#1f2937"), 1.0))
         label = self.instance.display_label
         if self.instance.block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
             label = _block_value_label(self.instance.block_kind, self.instance.impedance_ohm)
+        elif self.instance.block_kind in {"port_diff", "port_ground"} and self._port_label:
+            label = self._port_label
         painter.drawText(
-            QRectF(0.0, self._body_height + 1.0, _BLOCK_WIDTH, self._label_band_height - 2.0),
-            Qt.AlignCenter,
+            QRectF(0.0, self._body_height + 2.0, self._block_width, self._label_band_height - 4.0),
+            Qt.AlignCenter | Qt.TextWordWrap,
             label,
         )
 
     def _draw_ground_symbol(self, painter: QPainter, rect: QRectF) -> None:
-        port_point = self._port_items[1].pos()
-        body_x = self._mx(rect.left() + 32.0)
-        ground_x = self._mx(rect.center().x())
-        y = port_point.y()
-        y_ground = self._my(self._body_height / 2.0 + 12.0)
-        painter.drawLine(QPointF(port_point.x(), y), QPointF(body_x, y))
-        painter.drawLine(QPointF(body_x, y), QPointF(ground_x, y))
-        painter.drawLine(QPointF(ground_x, y), QPointF(ground_x, y_ground))
-        y2 = self._my(self._body_height / 2.0 + 16.0)
-        y3 = self._my(self._body_height / 2.0 + 20.0)
-        painter.drawLine(QPointF(ground_x - 12.0, y_ground), QPointF(ground_x + 12.0, y_ground))
-        painter.drawLine(QPointF(ground_x - 8.0, y2), QPointF(ground_x + 8.0, y2))
-        painter.drawLine(QPointF(ground_x - 4.0, y3), QPointF(ground_x + 4.0, y3))
-        label_x = 14.0 if port_point.x() <= rect.center().x() else rect.width() - 34.0
-        painter.drawText(QRectF(label_x, port_point.y() - 10.0, 28.0, 20.0), Qt.AlignCenter, "1")
+        scale = 1.0 if self._is_touchstone else self._symbol_scale
+        y = rect.height() / 2.0
+        port_x = self._port_items[1].pos().x()
+        total_w = _BLOCK_WIDTH * scale
+        right_end = port_x + total_w
+        terminal_length = 20.0 * scale
+        x1 = port_x + terminal_length
+        x2 = right_end - terminal_length
+        fg = QColor("#1e293b")
+        painter.setPen(QPen(fg, 2.0))
+        # Box leaving 50% of terminals outside
+        half_term = terminal_length / 2.0
+        box = QRectF(x1 - half_term, 2.0, (x2 + half_term) - (x1 - half_term), rect.height() - 4.0)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(box, 3.0, 3.0)
+        # Left terminal lead (from port to zigzag)
+        painter.drawLine(QPointF(port_x, y), QPointF(x1, y))
+        # Right terminal lead (from zigzag to GND symbol)
+        gnd_x = right_end
+        painter.drawLine(QPointF(x2, y), QPointF(gnd_x, y))
+        # Horizontal zigzag
+        zig_segments = 7
+        step = (x2 - x1) / zig_segments
+        amplitude = abs(step) * 1.7320508076 * 0.75
+        points = [
+            QPointF(x1, y),
+            QPointF(x1 + step, y - amplitude),
+            QPointF(x1 + 2 * step, y + amplitude),
+            QPointF(x1 + 3 * step, y - amplitude),
+            QPointF(x1 + 4 * step, y + amplitude),
+            QPointF(x1 + 5 * step, y - amplitude),
+            QPointF(x1 + 6 * step, y + amplitude),
+            QPointF(x2, y),
+        ]
+        for idx in range(len(points) - 1):
+            painter.drawLine(points[idx], points[idx + 1])
+        # GND symbol at right end
+        gw = 10.0 * scale
+        painter.drawLine(QPointF(gnd_x, y - gw), QPointF(gnd_x, y + gw))
+        painter.drawLine(QPointF(gnd_x + 3.0, y - gw * 0.6), QPointF(gnd_x + 3.0, y + gw * 0.6))
+        painter.drawLine(QPointF(gnd_x + 6.0, y - gw * 0.25), QPointF(gnd_x + 6.0, y + gw * 0.25))
 
     def _draw_diff_symbol(self, painter: QPainter, rect: QRectF) -> None:
-        top = self._port_items[1].pos().y()
-        bottom = self._port_items[2].pos().y()
-        port_x = self._port_items[1].pos().x()
-        body_start = self._mx(rect.left() + 32.0)
-        body_end = self._mx(rect.right() - 20.0)
-        painter.drawLine(QPointF(port_x, top), QPointF(body_start, top))
-        painter.drawLine(QPointF(port_x, bottom), QPointF(body_start, bottom))
-        painter.drawLine(QPointF(body_start, top), QPointF(body_end, top))
-        painter.drawLine(QPointF(body_start, bottom), QPointF(body_end, bottom))
-        label_x = 14.0 if port_x <= rect.center().x() else rect.width() - 34.0
-        painter.drawText(QRectF(label_x, top - 10.0, 28.0, 20.0), Qt.AlignCenter, "+")
-        painter.drawText(QRectF(label_x, bottom - 10.0, 28.0, 20.0), Qt.AlignCenter, "-")
-
-    def _draw_gnd_symbol(self, painter: QPainter, rect: QRectF) -> None:
-        if 1 not in self._port_items:
-            return
-        port = self._port_items[1].pos()
-        x_ground = self._mx(rect.center().x())
-        y = port.y()
-        painter.drawLine(QPointF(port.x(), y), QPointF(x_ground, y))
-        painter.drawLine(QPointF(x_ground - 12.0, y + 6.0), QPointF(x_ground + 12.0, y + 6.0))
-        painter.drawLine(QPointF(x_ground - 8.0, y + 11.0), QPointF(x_ground + 8.0, y + 11.0))
-        painter.drawLine(QPointF(x_ground - 4.0, y + 16.0), QPointF(x_ground + 4.0, y + 16.0))
-
-    def _draw_lumped_symbol(self, painter: QPainter, rect: QRectF) -> None:
-        if 1 not in self._port_items or 2 not in self._port_items:
-            return
-        y = (self._port_items[1].pos().y() + self._port_items[2].pos().y()) / 2.0
-        lumped_bg = QColor("#e2e8f0")
-        lumped_fg = _contrast_foreground(lumped_bg)
-        painter.setPen(QPen(QColor("#475569"), 1.2 if self.isSelected() else 1.0))
-        painter.setBrush(QBrush(lumped_bg))
-        painter.drawRoundedRect(rect.adjusted(8.0, 8.0, -8.0, -8.0), 6.0, 6.0)
+        scale = 1.0 if self._is_touchstone else self._symbol_scale
+        y = rect.height() / 2.0
         port_left = self._port_items[1].pos().x()
         port_right = self._port_items[2].pos().x()
-        x1 = port_left + 10.0 if port_left <= port_right else port_left - 10.0
-        x2 = port_right - 10.0 if port_left <= port_right else port_right + 10.0
-        pen = QPen(lumped_fg, 2.0)
-        painter.setPen(pen)
+        terminal_length = 20.0 * scale
+        x1 = port_left + terminal_length if port_left <= port_right else port_left - terminal_length
+        x2 = port_right - terminal_length if port_left <= port_right else port_right + terminal_length
+        fg = QColor("#1e293b")
+        painter.setPen(QPen(fg, 2.0))
+        # Box leaving 50% of terminals outside
+        half_term = terminal_length / 2.0
+        bx0 = min(x1, x2) - half_term
+        bx1 = max(x1, x2) + half_term
+        box = QRectF(bx0, 2.0, bx1 - bx0, rect.height() - 4.0)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(box, 4.0, 4.0)
+        # Terminal leads
         painter.drawLine(QPointF(port_left, y), QPointF(x1, y))
         painter.drawLine(QPointF(x2, y), QPointF(port_right, y))
-        if self.instance.block_kind == "lumped_r":
-            step = (x2 - x1) / 8.0
-            points = [
-                QPointF(x1, y),
-                QPointF(x1 + step, y - 6.0),
-                QPointF(x1 + 2 * step, y + 6.0),
-                QPointF(x1 + 3 * step, y - 6.0),
-                QPointF(x1 + 4 * step, y + 6.0),
-                QPointF(x1 + 5 * step, y - 6.0),
-                QPointF(x1 + 6 * step, y + 6.0),
-                QPointF(x1 + 7 * step, y - 6.0),
-                QPointF(x2, y),
-            ]
-            for idx in range(len(points) - 1):
-                painter.drawLine(points[idx], points[idx + 1])
-        elif self.instance.block_kind == "lumped_l":
-            loops = 5
-            span = (x2 - x1) / loops
-            for idx in range(loops):
-                center = x1 + (idx + 0.5) * span
-                painter.drawArc(QRectF(center - span / 2.0, y - 6.0, span, 12.0), 0, 180 * 16)
-        elif self.instance.block_kind == "lumped_c":
-            plate_gap = 5.0
-            cx = (x1 + x2) / 2.0
-            painter.drawLine(QPointF(x1, y), QPointF(cx - plate_gap, y))
-            painter.drawLine(QPointF(cx + plate_gap, y), QPointF(x2, y))
-            painter.drawLine(QPointF(cx - plate_gap, y - 9.0), QPointF(cx - plate_gap, y + 9.0))
-            painter.drawLine(QPointF(cx + plate_gap, y - 9.0), QPointF(cx + plate_gap, y + 9.0))
+        # Horizontal zigzag (same as R)
+        zig_segments = 7
+        step = (x2 - x1) / zig_segments
+        amplitude = abs(step) * 1.7320508076 * 0.75  # tan(60 deg), 75% length
+        points = [
+            QPointF(x1, y),
+            QPointF(x1 + step, y - amplitude),
+            QPointF(x1 + 2 * step, y + amplitude),
+            QPointF(x1 + 3 * step, y - amplitude),
+            QPointF(x1 + 4 * step, y + amplitude),
+            QPointF(x1 + 5 * step, y - amplitude),
+            QPointF(x1 + 6 * step, y + amplitude),
+            QPointF(x2, y),
+        ]
+        for idx in range(len(points) - 1):
+            painter.drawLine(points[idx], points[idx + 1])
+
+    def _draw_gnd_symbol(self, painter: QPainter, rect: QRectF) -> None:
+        del painter
+        del rect
+
+    def _draw_gnd_canvas(self, painter: QPainter, rect: QRectF) -> None:
+        scale = 1.0 if self._is_touchstone else self._symbol_scale
+        y = rect.height() / 2.0
+        port_x = self._port_items[1].pos().x()
+        gnd_x = port_x + _BLOCK_WIDTH * 0.3 * scale
+        fg = QColor("#1e293b")
+        painter.setPen(QPen(fg, 2.0))
+        # Straight line from port to GND
+        painter.drawLine(QPointF(port_x, y), QPointF(gnd_x, y))
+        # GND symbol at right end
+        gw = 10.0 * scale
+        painter.drawLine(QPointF(gnd_x, y - gw), QPointF(gnd_x, y + gw))
+        painter.drawLine(QPointF(gnd_x + 3.0, y - gw * 0.6), QPointF(gnd_x + 3.0, y + gw * 0.6))
+        painter.drawLine(QPointF(gnd_x + 6.0, y - gw * 0.25), QPointF(gnd_x + 6.0, y + gw * 0.25))
+
+    def _draw_lumped_symbol(self, painter: QPainter, rect: QRectF) -> None:
+        if self.instance.block_kind != "lumped_r":
+            return
+        scale = 1.0 if self._is_touchstone else self._symbol_scale
+        y = (self._port_items[1].pos().y() + self._port_items[2].pos().y()) / 2.0
+        port_left = self._port_items[1].pos().x()
+        port_right = self._port_items[2].pos().x()
+        terminal_length = 20.0 * scale
+        x1 = port_left + terminal_length if port_left <= port_right else port_left - terminal_length
+        x2 = port_right - terminal_length if port_left <= port_right else port_right + terminal_length
+        painter.setPen(QPen(QColor("#1e293b"), 2.0))
+        painter.drawLine(QPointF(port_left, y), QPointF(x1, y))
+        painter.drawLine(QPointF(x2, y), QPointF(port_right, y))
+
+        zig_segments = 7
+        step = (x2 - x1) / zig_segments
+        amplitude = abs(step) * 1.7320508076 * 0.75  # tan(60 deg), 75% length
+        points = [
+            QPointF(x1, y),
+            QPointF(x1 + step, y - amplitude),
+            QPointF(x1 + 2 * step, y + amplitude),
+            QPointF(x1 + 3 * step, y - amplitude),
+            QPointF(x1 + 4 * step, y + amplitude),
+            QPointF(x1 + 5 * step, y - amplitude),
+            QPointF(x1 + 6 * step, y + amplitude),
+            QPointF(x2, y),
+        ]
+        for idx in range(len(points) - 1):
+            painter.drawLine(points[idx], points[idx + 1])
 
     def sync_from_instance(self, instance) -> None:
         self.instance = instance
@@ -664,7 +924,7 @@ class CircuitBlockItem(QGraphicsObject):
         self.update()
 
     def _apply_visual_transform(self) -> None:
-        self.setTransformOriginPoint(_BLOCK_WIDTH / 2.0, self._body_height / 2.0)
+        self.setTransformOriginPoint(self._block_width / 2.0, self._body_height / 2.0)
         self.setTransform(self.transform().fromScale(1.0, 1.0))
         self._apply_port_layout()
         self.setRotation(float(self.instance.rotation_deg % 360))
@@ -748,6 +1008,22 @@ class CircuitScene(QGraphicsScene):
                 port_item = block_item.port_item(port_number)
                 port_item.set_pending(False)
                 port_item.set_exported(document.is_port_exported(port_item.port_ref))
+            if block_item.instance.block_kind == "port_ground":
+                nums = [
+                    str(ep.external_port_number)
+                    for ep in document.external_ports
+                    if ep.port_ref.instance_id == block_item.instance.instance_id
+                ]
+                block_item._port_label = ", ".join(f"P{n}" for n in nums) if nums else ""
+                block_item.update()
+            elif block_item.instance.block_kind == "port_diff":
+                nums = [
+                    str(dp.external_port_number)
+                    for dp in document.differential_ports
+                    if dp.port_ref_plus.instance_id == block_item.instance.instance_id
+                ]
+                block_item._port_label = ", ".join(f"Pd{n}" for n in nums) if nums else ""
+                block_item.update()
 
 
 class CircuitWindow(QMainWindow):
@@ -802,16 +1078,16 @@ class CircuitWindow(QMainWindow):
         self._impedance_editor.setSuffix(" Ohm")
         self._impedance_editor.valueChanged.connect(self._on_impedance_changed)
         self._impedance_editor.setEnabled(False)
+        self._symbol_size_editor = QDoubleSpinBox()
+        self._symbol_size_editor.setRange(0.50, 3.00)
+        self._symbol_size_editor.setSingleStep(0.10)
+        self._symbol_size_editor.setDecimals(2)
+        self._symbol_size_editor.setSuffix("x")
+        self._symbol_size_editor.valueChanged.connect(self._on_symbol_scale_changed)
+        self._symbol_size_editor.setEnabled(False)
         self._selected_instance_id: str | None = None
         self._updating_impedance_editor = False
-        self._rotation_editor = QComboBox()
-        self._rotation_editor.addItems(["0 deg", "90 deg", "180 deg", "270 deg"])
-        self._rotation_editor.currentTextChanged.connect(self._on_transform_changed)
-        self._mirror_h_editor = QCheckBox("Mirror horizontal")
-        self._mirror_h_editor.toggled.connect(self._on_transform_changed)
-        self._mirror_v_editor = QCheckBox("Mirror vertical")
-        self._mirror_v_editor.toggled.connect(self._on_transform_changed)
-        self._updating_transform_editor = False
+        self._updating_symbol_size_editor = False
 
         self._export_button = QPushButton("Export equivalent Touchstone")
         self._export_button.clicked.connect(self._export_equivalent_touchstone)
@@ -819,6 +1095,7 @@ class CircuitWindow(QMainWindow):
         left_panel = QFrame()
         left_panel.setFrameShape(QFrame.StyledPanel)
         left_panel.setMinimumWidth(220)
+        left_panel.setStyleSheet("QFrame { background-color: #f7f7f7; border: 1px solid #d1d5db; }")
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(8, 8, 8, 8)
         left_layout.addWidget(QLabel("Blocks"))
@@ -840,13 +1117,8 @@ class CircuitWindow(QMainWindow):
 
         impedance_form = QFormLayout()
         impedance_form.addRow("Selected impedance", self._impedance_editor)
+        impedance_form.addRow("Selected symbol size", self._symbol_size_editor)
         inspector_layout.addLayout(impedance_form)
-
-        transform_form = QFormLayout()
-        transform_form.addRow("Rotation", self._rotation_editor)
-        inspector_layout.addLayout(transform_form)
-        inspector_layout.addWidget(self._mirror_h_editor)
-        inspector_layout.addWidget(self._mirror_v_editor)
 
         inspector_layout.addWidget(self._export_button)
         inspector_layout.addWidget(self._status_label)
@@ -932,6 +1204,7 @@ class CircuitWindow(QMainWindow):
         display_label = str(payload.get("label", "Block"))
         nports = int(payload.get("nports", 0))
         impedance_ohm = float(payload.get("impedance_ohm", 50.0))
+        symbol_scale = float(payload.get("symbol_scale", 1.0))
 
         if block_kind == "touchstone":
             loaded = self._state.get_file(source_file_id)
@@ -950,6 +1223,7 @@ class CircuitWindow(QMainWindow):
             position_y=scene_pos.y(),
             block_kind=block_kind,
             impedance_ohm=impedance_ohm,
+            symbol_scale=symbol_scale,
         )
         block_item = CircuitBlockItem(self._scene, instance)
         self._scene.register_block(block_item)
@@ -969,28 +1243,20 @@ class CircuitWindow(QMainWindow):
             self._impedance_editor.setEnabled(False)
             self._impedance_editor.setValue(50.0)
             self._updating_impedance_editor = False
-            self._updating_transform_editor = True
-            self._rotation_editor.setEnabled(False)
-            self._rotation_editor.setCurrentText("0 deg")
-            self._mirror_h_editor.setEnabled(False)
-            self._mirror_h_editor.setChecked(False)
-            self._mirror_v_editor.setEnabled(False)
-            self._mirror_v_editor.setChecked(False)
-            self._updating_transform_editor = False
+            self._updating_symbol_size_editor = True
+            self._symbol_size_editor.setEnabled(False)
+            self._symbol_size_editor.setValue(1.0)
+            self._updating_symbol_size_editor = False
             return
         self._selected_instance_id = block_item.instance.instance_id
         self._updating_impedance_editor = True
         self._impedance_editor.setEnabled(block_item.instance.block_kind in {"port_ground", "port_diff"})
         self._impedance_editor.setValue(block_item.instance.impedance_ohm)
         self._updating_impedance_editor = False
-        self._updating_transform_editor = True
-        self._rotation_editor.setEnabled(True)
-        self._rotation_editor.setCurrentText(f"{block_item.instance.rotation_deg % 360} deg")
-        self._mirror_h_editor.setEnabled(True)
-        self._mirror_h_editor.setChecked(block_item.instance.mirror_horizontal)
-        self._mirror_v_editor.setEnabled(True)
-        self._mirror_v_editor.setChecked(block_item.instance.mirror_vertical)
-        self._updating_transform_editor = False
+        self._updating_symbol_size_editor = True
+        self._symbol_size_editor.setEnabled(block_item.instance.block_kind != "touchstone")
+        self._symbol_size_editor.setValue(float(getattr(block_item.instance, "symbol_scale", 1.0)))
+        self._updating_symbol_size_editor = False
 
     def _on_impedance_changed(self, value: float) -> None:
         if self._updating_impedance_editor or self._selected_instance_id is None:
@@ -1007,22 +1273,32 @@ class CircuitWindow(QMainWindow):
         self._refresh_validation_state()
         self._emit_project_modified()
 
-    def _on_transform_changed(self, *_args) -> None:
-        if self._updating_transform_editor or self._selected_instance_id is None:
+    def _on_symbol_scale_changed(self, value: float) -> None:
+        if self._updating_symbol_size_editor or self._selected_instance_id is None:
             return
-        text = self._rotation_editor.currentText().strip().split(" ")[0]
-        try:
-            rotation_deg = int(text)
-        except ValueError:
-            rotation_deg = 0
-        mirror_h = self._mirror_h_editor.isChecked()
-        mirror_v = self._mirror_v_editor.isChecked()
-        self._apply_instance_transform(
-            self._selected_instance_id,
-            rotation_deg=rotation_deg,
-            mirror_horizontal=mirror_h,
-            mirror_vertical=mirror_v,
-        )
+        instance = self._document.get_instance(self._selected_instance_id)
+        if instance is None or instance.block_kind == "touchstone":
+            return
+        self._document.update_instance_symbol_scale(self._selected_instance_id, value)
+        block_item = self._scene._block_items.get(self._selected_instance_id)
+        updated_instance = self._document.get_instance(self._selected_instance_id)
+        if block_item is None or updated_instance is None:
+            return
+        replacement_item = CircuitBlockItem(self._scene, updated_instance)
+        replacement_item.setPos(block_item.pos())
+        replacement_item.setSelected(block_item.isSelected())
+        for connection_item in self._scene._connection_items.values():
+            if connection_item.port_a.owner is block_item:
+                connection_item.port_a = replacement_item.port_item(connection_item.port_a.port_number)
+            if connection_item.port_b.owner is block_item:
+                connection_item.port_b = replacement_item.port_item(connection_item.port_b.port_number)
+            connection_item.refresh_geometry()
+        self._scene.removeItem(block_item)
+        self._scene._block_items[self._selected_instance_id] = replacement_item
+        self._scene.addItem(replacement_item)
+        self._status_label.setText(f"Symbol size updated to {value:.2f}x.")
+        self._refresh_validation_state()
+        self._emit_project_modified()
 
     def _apply_instance_transform(
         self,
@@ -1045,12 +1321,6 @@ class CircuitWindow(QMainWindow):
         block_item.sync_from_instance(updated_instance)
         self._refresh_connection_geometry_for_block(block_item)
         self._status_label.setText("Block transform updated.")
-        if self._selected_instance_id == instance_id:
-            self._updating_transform_editor = True
-            self._rotation_editor.setCurrentText(f"{updated_instance.rotation_deg % 360} deg")
-            self._mirror_h_editor.setChecked(updated_instance.mirror_horizontal)
-            self._mirror_v_editor.setChecked(updated_instance.mirror_vertical)
-            self._updating_transform_editor = False
         self._emit_project_modified()
 
     def create_connection(self, port_a: CircuitPortRef, port_b: CircuitPortRef) -> None:
@@ -1106,7 +1376,7 @@ class CircuitWindow(QMainWindow):
             self._status_label.setText(issues[0].message)
             return
 
-        if not self._document.external_ports:
+        if not self._document.external_ports and not self._document.differential_ports:
             self._export_button.setEnabled(False)
             self._status_label.setText("Add at least one external port block to export an equivalent Touchstone.")
             return

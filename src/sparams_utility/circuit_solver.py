@@ -71,8 +71,9 @@ def solve_circuit_network(document: CircuitDocument, state: AppState) -> Circuit
     if frequencies.size == 0:
         raise ValueError("Sweep has no valid frequency points.")
 
-    external_assignments = sorted(document.external_ports, key=lambda item: item.external_port_number)
-    if not external_assignments:
+    se_assignments = sorted(document.external_ports, key=lambda item: item.external_port_number)
+    diff_assignments = sorted(document.differential_ports, key=lambda item: item.external_port_number)
+    if not se_assignments and not diff_assignments:
         raise ValueError("At least one external port block is required.")
 
     uf = _UnionFind()
@@ -105,29 +106,53 @@ def solve_circuit_network(document: CircuitDocument, state: AppState) -> Circuit
     if node_count == 0:
         raise ValueError("No active electrical nodes found in circuit.")
 
-    external_nodes: List[int] = []
-    z0_values: List[float] = []
-    for assignment in external_assignments:
+    # Build internal SE node list: first all single-ended ports, then + and − of each diff pair.
+    internal_se_nodes: List[int] = []
+    internal_se_z0: List[float] = []
+    # Track which internal indices correspond to differential pairs for later MM conversion.
+    diff_pair_indices: List[Tuple[int, int]] = []  # (plus_idx, minus_idx) into internal_se_nodes
+
+    for assignment in se_assignments:
         key = assignment.port_ref.key()
         if key not in uf.parent:
             raise ValueError("An external port references a missing block port.")
         root = uf.find(key)
         if root in grounded_roots:
             raise ValueError("An external port cannot be tied directly to GND.")
-        external_nodes.append(root_to_node[root])
+        internal_se_nodes.append(root_to_node[root])
         instance = document.get_instance(assignment.port_ref.instance_id)
-        z0_values.append(float(instance.impedance_ohm) if instance is not None else 50.0)
+        internal_se_z0.append(float(instance.impedance_ohm) if instance is not None else 50.0)
 
-    if len(set(external_nodes)) != len(external_nodes):
+    for diff_assign in diff_assignments:
+        plus_key = diff_assign.port_ref_plus.key()
+        minus_key = diff_assign.port_ref_minus.key()
+        if plus_key not in uf.parent or minus_key not in uf.parent:
+            raise ValueError("A differential port references a missing block port.")
+        root_p = uf.find(plus_key)
+        root_m = uf.find(minus_key)
+        if root_p in grounded_roots or root_m in grounded_roots:
+            raise ValueError("A differential port terminal cannot be tied directly to GND.")
+        plus_idx = len(internal_se_nodes)
+        internal_se_nodes.append(root_to_node[root_p])
+        minus_idx = len(internal_se_nodes)
+        internal_se_nodes.append(root_to_node[root_m])
+        diff_instance = document.get_instance(diff_assign.port_ref_plus.instance_id)
+        z0_se = float(diff_instance.impedance_ohm) / 2.0 if diff_instance is not None else 50.0
+        internal_se_z0.append(z0_se)
+        internal_se_z0.append(z0_se)
+        diff_pair_indices.append((plus_idx, minus_idx))
+
+    if len(set(internal_se_nodes)) != len(internal_se_nodes):
         raise ValueError("Two or more external ports are shorted together. Use distinct nodes for exported ports.")
 
-    z0_array = np.array(z0_values, dtype=float)
-    if np.any(z0_array <= 0.0):
+    z0_se_array = np.array(internal_se_z0, dtype=float)
+    if np.any(z0_se_array <= 0.0):
         raise ValueError("External port impedance must be > 0.")
 
     touchstone_cache = _build_touchstone_cache(document, state)
 
-    s_out = np.zeros((frequencies.size, len(external_nodes), len(external_nodes)), dtype=np.complex128)
+    n_se = len(internal_se_nodes)
+    s_se_all = np.zeros((frequencies.size, n_se, n_se), dtype=np.complex128)
     for idx, frequency in enumerate(frequencies):
         y_global = np.zeros((node_count, node_count), dtype=np.complex128)
 
@@ -140,14 +165,38 @@ def solve_circuit_network(document: CircuitDocument, state: AppState) -> Circuit
             if instance.block_kind == "touchstone":
                 _stamp_touchstone(instance, frequency, uf, grounded_roots, root_to_node, y_global, touchstone_cache)
 
-        y_ports = _reduce_to_external_ports(y_global, external_nodes)
-        s_out[idx] = _y_to_s(y_ports, z0_array)
+        y_ports = _reduce_to_external_ports(y_global, internal_se_nodes)
+        s_se_all[idx] = _y_to_s(y_ports, z0_se_array)
+
+    # Apply SE → mixed-mode (differential) conversion if there are differential ports.
+    if diff_pair_indices:
+        n_se_only = len(se_assignments)
+        n_diff = len(diff_assignments)
+        n_out = n_se_only + n_diff
+        z0_out_list: List[float] = []
+        for assignment in se_assignments:
+            inst = document.get_instance(assignment.port_ref.instance_id)
+            z0_out_list.append(float(inst.impedance_ohm) if inst is not None else 50.0)
+        for diff_assign in diff_assignments:
+            inst = document.get_instance(diff_assign.port_ref_plus.instance_id)
+            z0_out_list.append(float(inst.impedance_ohm) if inst is not None else 100.0)
+        z0_out = np.array(z0_out_list, dtype=float)
+
+        s_out = np.zeros((frequencies.size, n_out, n_out), dtype=np.complex128)
+        for idx in range(frequencies.size):
+            s_out[idx] = _se_to_mixed_mode(
+                s_se_all[idx], n_se_only, diff_pair_indices,
+            )
+    else:
+        n_out = len(se_assignments)
+        z0_out = z0_se_array
+        s_out = s_se_all
 
     return CircuitSolveResult(
-        nports=len(external_nodes),
+        nports=n_out,
         frequencies_hz=frequencies,
         s_matrices=s_out,
-        z0_ohm=z0_array,
+        z0_ohm=z0_out,
         passivity=_analyze_passivity(frequencies, s_out),
     )
 
@@ -464,6 +513,61 @@ def _stamp_general_admittance(
         return
     jj = root_to_node[root_j]
     y_global[ii, jj] += value
+
+
+def _se_to_mixed_mode(
+    s_se: np.ndarray,
+    n_se_only: int,
+    diff_pair_indices: List[Tuple[int, int]],
+) -> np.ndarray:
+    """Convert a single-ended S-matrix to mixed-mode, keeping only Sdd for differential pairs.
+
+    The internal SE matrix has indices [0..n_se_only-1] for single-ended ports,
+    then pairs of (+, −) indices for each differential port.
+    The output has n_se_only + len(diff_pair_indices) ports: first the SE ports,
+    then one differential (dd) port per pair.
+
+    The modal transformation for each differential pair converts the SE pair (p, n)
+    into differential and common modes using:
+        a_d = (a_p − a_n) / √2
+        a_c = (a_p + a_n) / √2
+
+    We build a full transformation matrix M that is identity for SE ports and
+    applies the modal conversion for each diff pair, then extract only the
+    rows/columns corresponding to SE ports and differential modes (discarding
+    common-mode rows/columns).
+    """
+    n_se_total = s_se.shape[0]
+    n_diff = len(diff_pair_indices)
+    n_out = n_se_only + n_diff
+
+    # Build the full modal transformation matrix M (n_se_total × n_se_total).
+    # For SE-only ports: identity rows.
+    # For each diff pair: row for diff mode, row for common mode.
+    m_full = np.zeros((n_se_total, n_se_total), dtype=np.complex128)
+    for i in range(n_se_only):
+        m_full[i, i] = 1.0
+
+    inv_sqrt2 = 1.0 / math.sqrt(2.0)
+    for d_idx, (plus_idx, minus_idx) in enumerate(diff_pair_indices):
+        row_d = n_se_only + 2 * d_idx       # differential mode row
+        row_c = n_se_only + 2 * d_idx + 1   # common mode row
+        # Differential: (plus − minus) / √2
+        m_full[row_d, plus_idx] = inv_sqrt2
+        m_full[row_d, minus_idx] = -inv_sqrt2
+        # Common: (plus + minus) / √2
+        m_full[row_c, plus_idx] = inv_sqrt2
+        m_full[row_c, minus_idx] = inv_sqrt2
+
+    # S_mm_full = M · S_se · M^{-1}  (M is unitary so M^{-1} = M^H)
+    s_mm_full = m_full @ s_se @ m_full.conj().T
+
+    # Extract only the rows/columns for SE ports and differential modes (drop common modes).
+    keep_indices = list(range(n_se_only))
+    for d_idx in range(n_diff):
+        keep_indices.append(n_se_only + 2 * d_idx)  # differential mode only
+    keep = np.array(keep_indices, dtype=int)
+    return s_mm_full[np.ix_(keep, keep)]
 
 
 def _reduce_to_external_ports(y_global: np.ndarray, external_nodes: List[int]) -> np.ndarray:
