@@ -4,7 +4,7 @@ import json
 from typing import Dict
 
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics, QKeySequence, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -14,8 +14,8 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsEllipseItem,
     QGraphicsItem,
-    QGraphicsLineItem,
     QGraphicsObject,
+    QGraphicsPathItem,
     QGraphicsPolygonItem,
     QGraphicsScene,
     QGraphicsView,
@@ -40,6 +40,7 @@ from sparams_utility.models.state import AppState
 _MIME_BLOCK_DEF = "application/x-sparams-block-def"
 _BLOCK_WIDTH = 92.0
 _PORT_RADIUS = 6.0
+_GRID_SIZE = 20.0
 _SCHEMATIC_BG = QColor("#f7f7f7")
 _FREQUENCY_UNIT_SCALE = {
     "Hz": 1.0,
@@ -202,7 +203,19 @@ class BlockPreviewWidget(QWidget):
         if self._block_kind == "gnd":
             self._draw_gnd_symbol(painter, rect)
             return
-        if self._block_kind in {"lumped_l", "lumped_c"}:
+        if self._block_kind == "lumped_l":
+            self._draw_inductor_symbol(
+                painter,
+                rect,
+                foreground_color=QColor("#1e293b"),
+            )
+            return
+        if self._block_kind == "lumped_c":
+            self._draw_capacitor_symbol(
+                painter,
+                rect,
+                foreground_color=QColor("#1e293b"),
+            )
             return
 
         left_count = (self._nports + 1) // 2
@@ -409,6 +422,47 @@ class BlockPreviewWidget(QWidget):
         for idx in range(len(points) - 1):
             painter.drawLine(points[idx], points[idx + 1])
 
+    def _draw_inductor_symbol(self, painter: QPainter, rect: QRectF, *, foreground_color: QColor) -> None:
+        y = rect.center().y()
+        x0 = rect.left()
+        x3 = rect.right()
+        terminal_length = 20.0
+        x1 = x0 + terminal_length
+        x2 = x3 - terminal_length
+        painter.setPen(QPen(foreground_color, 2.0))
+        painter.setBrush(QBrush(QColor("#ffffff")))
+        painter.drawPolygon(_hex_port_polygon(float(x0), float(y), _PORT_RADIUS))
+        painter.drawPolygon(_hex_port_polygon(float(x3), float(y), _PORT_RADIUS))
+        painter.drawLine(QPointF(x0, y), QPointF(x1, y))
+        painter.drawLine(QPointF(x2, y), QPointF(x3, y))
+        # Draw coil arcs (4 humps centred on wire)
+        painter.setBrush(Qt.NoBrush)
+        n_humps = 4
+        hump_w = (x2 - x1) / n_humps
+        hump_h = hump_w * 0.8
+        for i in range(n_humps):
+            arc_rect = QRectF(x1 + i * hump_w, y - hump_h, hump_w, hump_h * 2.0)
+            painter.drawArc(arc_rect, 0, 180 * 16)
+
+    def _draw_capacitor_symbol(self, painter: QPainter, rect: QRectF, *, foreground_color: QColor) -> None:
+        y = rect.center().y()
+        x0 = rect.left()
+        x3 = rect.right()
+        terminal_length = 20.0
+        cx = (x0 + x3) / 2.0
+        painter.setPen(QPen(foreground_color, 2.0))
+        painter.setBrush(QBrush(QColor("#ffffff")))
+        painter.drawPolygon(_hex_port_polygon(float(x0), float(y), _PORT_RADIUS))
+        painter.drawPolygon(_hex_port_polygon(float(x3), float(y), _PORT_RADIUS))
+        # Horizontal leads
+        gap = 4.0
+        painter.drawLine(QPointF(x0, y), QPointF(cx - gap, y))
+        painter.drawLine(QPointF(cx + gap, y), QPointF(x3, y))
+        # Two vertical plates
+        plate_h = 16.0
+        painter.drawLine(QPointF(cx - gap, y - plate_h), QPointF(cx - gap, y + plate_h))
+        painter.drawLine(QPointF(cx + gap, y - plate_h), QPointF(cx + gap, y + plate_h))
+
 
 def _build_palette_payload(
     *,
@@ -600,7 +654,7 @@ class PortItem(QGraphicsPolygonItem):
         return CircuitPortRef(self.owner.instance.instance_id, self.port_number)
 
 
-class CircuitConnectionItem(QGraphicsLineItem):
+class CircuitConnectionItem(QGraphicsPathItem):
     def __init__(self, connection_id: str, port_a: PortItem, port_b: PortItem) -> None:
         super().__init__()
         self.connection_id = connection_id
@@ -608,14 +662,67 @@ class CircuitConnectionItem(QGraphicsLineItem):
         self.port_b = port_b
         self.setAcceptHoverEvents(True)
         self.setPen(QPen(QColor("#2563eb"), 4.0))
+        self.setBrush(Qt.NoBrush)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setZValue(-1.0)
         self.refresh_geometry()
 
     def refresh_geometry(self) -> None:
-        pos_a = self.port_a.sceneBoundingRect().center()
-        pos_b = self.port_b.sceneBoundingRect().center()
-        self.setLine(pos_a.x(), pos_a.y(), pos_b.x(), pos_b.y())
+        pa = self.port_a.sceneBoundingRect().center()
+        pb = self.port_b.sceneBoundingRect().center()
+        ax, ay = pa.x(), pa.y()
+        bx, by = pb.x(), pb.y()
+
+        a_right = self._port_exits_right(self.port_a)
+        b_right = self._port_exits_right(self.port_b)
+        if a_right is None:
+            a_right = bx > ax
+        if b_right is None:
+            b_right = ax > bx
+
+        def _snap(v: float) -> float:
+            return round(v / _GRID_SIZE) * _GRID_SIZE
+
+        path = QPainterPath()
+        path.moveTo(pa)
+
+        # Z-route only when ports face each other with correct arrangement
+        can_z = (a_right and not b_right and ax < bx) or (
+            not a_right and b_right and ax > bx
+        )
+
+        if can_z:
+            if abs(ay - by) < 1.0:
+                pass  # straight horizontal — lineTo(pb) below
+            else:
+                mid_x = _snap((ax + bx) / 2.0)
+                path.lineTo(mid_x, ay)
+                path.lineTo(mid_x, by)
+        else:
+            # 5-segment route: exit → vertical → bridge → vertical → enter
+            a_dir = 1.0 if a_right else -1.0
+            b_dir = 1.0 if b_right else -1.0
+            a_ext = _snap(ax + a_dir * _GRID_SIZE * 2)
+            b_ext = _snap(bx + b_dir * _GRID_SIZE * 2)
+            mid_y = _snap((ay + by) / 2.0)
+            # Avoid degenerate bridge when ports are near the same Y
+            if abs(mid_y - ay) < _GRID_SIZE and abs(mid_y - by) < _GRID_SIZE:
+                mid_y = _snap(min(ay, by) - _GRID_SIZE * 3)
+            path.lineTo(a_ext, ay)
+            path.lineTo(a_ext, mid_y)
+            path.lineTo(b_ext, mid_y)
+            path.lineTo(b_ext, by)
+
+        path.lineTo(pb)
+        self.setPath(path)
+
+    @staticmethod
+    def _port_exits_right(port_item: PortItem) -> bool | None:
+        owner = port_item.owner
+        if not isinstance(owner, CircuitBlockItem):
+            return None
+        local_x = port_item.pos().x()
+        return local_x >= owner._block_width / 2.0
 
     def hoverEnterEvent(self, event) -> None:  # noqa: N802
         self.setPen(QPen(QColor("#1d4ed8"), 6.0))
@@ -764,8 +871,10 @@ class CircuitBlockItem(QGraphicsObject):
             self._draw_diff_symbol(painter, rect)
         elif self.instance.block_kind == "port_ground":
             self._draw_ground_symbol(painter, rect)
-        elif self.instance.block_kind in {"lumped_l", "lumped_c"}:
-            pass
+        elif self.instance.block_kind == "lumped_l":
+            self._draw_inductor_symbol(painter, rect)
+        elif self.instance.block_kind == "lumped_c":
+            self._draw_capacitor_symbol(painter, rect)
         else:
             for port_number, port_item in self._port_items.items():
                 point = port_item.pos()
@@ -918,6 +1027,44 @@ class CircuitBlockItem(QGraphicsObject):
         for idx in range(len(points) - 1):
             painter.drawLine(points[idx], points[idx + 1])
 
+    def _draw_inductor_symbol(self, painter: QPainter, rect: QRectF) -> None:
+        scale = 1.0 if self._is_touchstone else self._symbol_scale
+        y = (self._port_items[1].pos().y() + self._port_items[2].pos().y()) / 2.0
+        port_left = self._port_items[1].pos().x()
+        port_right = self._port_items[2].pos().x()
+        terminal_length = 20.0 * scale
+        x1 = port_left + terminal_length if port_left <= port_right else port_left - terminal_length
+        x2 = port_right - terminal_length if port_left <= port_right else port_right + terminal_length
+        painter.setPen(QPen(QColor("#1e293b"), 2.0))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawLine(QPointF(port_left, y), QPointF(x1, y))
+        painter.drawLine(QPointF(x2, y), QPointF(port_right, y))
+        # Draw coil arcs (4 humps centred on wire)
+        n_humps = 4
+        hump_w = (x2 - x1) / n_humps
+        hump_h = abs(hump_w) * 0.8
+        start_x = min(x1, x2)
+        for i in range(n_humps):
+            arc_rect = QRectF(start_x + i * abs(hump_w), y - hump_h, abs(hump_w), hump_h * 2.0)
+            painter.drawArc(arc_rect, 0, 180 * 16)
+
+    def _draw_capacitor_symbol(self, painter: QPainter, rect: QRectF) -> None:
+        scale = 1.0 if self._is_touchstone else self._symbol_scale
+        y = (self._port_items[1].pos().y() + self._port_items[2].pos().y()) / 2.0
+        port_left = self._port_items[1].pos().x()
+        port_right = self._port_items[2].pos().x()
+        cx = (port_left + port_right) / 2.0
+        gap = 4.0 * scale
+        painter.setPen(QPen(QColor("#1e293b"), 2.0))
+        painter.setBrush(Qt.NoBrush)
+        # Horizontal leads
+        painter.drawLine(QPointF(port_left, y), QPointF(cx - gap, y))
+        painter.drawLine(QPointF(cx + gap, y), QPointF(port_right, y))
+        # Two vertical plates
+        plate_h = 12.0 * scale
+        painter.drawLine(QPointF(cx - gap, y - plate_h), QPointF(cx - gap, y + plate_h))
+        painter.drawLine(QPointF(cx + gap, y - plate_h), QPointF(cx + gap, y + plate_h))
+
     def sync_from_instance(self, instance) -> None:
         self.instance = instance
         self._apply_visual_transform()
@@ -930,6 +1077,12 @@ class CircuitBlockItem(QGraphicsObject):
         self.setRotation(float(self.instance.rotation_deg % 360))
 
     def itemChange(self, change, value):  # noqa: N802, ANN001
+        if change == QGraphicsItem.ItemPositionChange:
+            # Snap to grid
+            new_pos = value
+            snapped_x = round(new_pos.x() / _GRID_SIZE) * _GRID_SIZE
+            snapped_y = round(new_pos.y() / _GRID_SIZE) * _GRID_SIZE
+            return QPointF(snapped_x, snapped_y)
         if change == QGraphicsItem.ItemPositionHasChanged:
             self._scene_ref.handle_block_moved(self)
         return super().itemChange(change, value)
@@ -948,6 +1101,21 @@ class CircuitScene(QGraphicsScene):
         self._block_items: Dict[str, CircuitBlockItem] = {}
         self._connection_items: Dict[str, CircuitConnectionItem] = {}
         self._pending_port: PortItem | None = None
+
+    def drawBackground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
+        super().drawBackground(painter, rect)
+        pen = QPen(QColor("#d0d0d0"), 1.0)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        left = int(rect.left() / _GRID_SIZE) * _GRID_SIZE
+        top = int(rect.top() / _GRID_SIZE) * _GRID_SIZE
+        x = left
+        while x <= rect.right():
+            y = top
+            while y <= rect.bottom():
+                painter.drawPoint(QPointF(x, y))
+                y += _GRID_SIZE
+            x += _GRID_SIZE
 
     def clear_pending_port(self) -> None:
         if self._pending_port is not None:
