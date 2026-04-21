@@ -2103,6 +2103,12 @@ class CircuitWindow(QMainWindow):
             if inst.block_kind in {"port_ground", "port_diff"}:
                 label = f"{inst.block_kind} ({inst.instance_id[:8]})"
                 self._drv_output_port_instance.addItem(label, inst.instance_id)
+        pending = getattr(self, "_pending_output_port_instance_id", None)
+        if pending is not None:
+            idx = self._drv_output_port_instance.findData(pending)
+            if idx >= 0:
+                self._drv_output_port_instance.setCurrentIndex(idx)
+            self._pending_output_port_instance_id = None
 
     def _run_channel_simulation(self) -> None:
         # Find the driver instance in the document
@@ -2196,6 +2202,15 @@ class CircuitWindow(QMainWindow):
             "stat_enabled": self._stat_enabled.isChecked(),
             "stat_noise_mv": self._stat_noise.value(),
             "stat_jitter_ps": self._stat_jitter.value(),
+            "drv_v_high": self._drv_v_high.value(),
+            "drv_v_low": self._drv_v_low.value(),
+            "drv_rise_time_ps": self._drv_rise_time.value(),
+            "drv_fall_time_ps": self._drv_fall_time.value(),
+            "drv_bitrate_gbps": self._drv_bitrate.value(),
+            "drv_prbs": self._drv_prbs.currentText(),
+            "drv_encoding": self._drv_encoding.currentText(),
+            "drv_num_bits": self._drv_num_bits.value(),
+            "drv_output_port_instance_id": self._drv_output_port_instance.currentData(),
             **self._document.to_dict(),
         }
 
@@ -2290,6 +2305,46 @@ class CircuitWindow(QMainWindow):
         self._stat_jitter.blockSignals(True)
         self._stat_jitter.setValue(stat_jitter_ps)
         self._stat_jitter.blockSignals(False)
+
+        self._drv_v_high.blockSignals(True)
+        self._drv_v_high.setValue(float(state.get("drv_v_high", 0.4)))
+        self._drv_v_high.blockSignals(False)
+
+        self._drv_v_low.blockSignals(True)
+        self._drv_v_low.setValue(float(state.get("drv_v_low", -0.4)))
+        self._drv_v_low.blockSignals(False)
+
+        self._drv_rise_time.blockSignals(True)
+        self._drv_rise_time.setValue(float(state.get("drv_rise_time_ps", 25.0)))
+        self._drv_rise_time.blockSignals(False)
+
+        self._drv_fall_time.blockSignals(True)
+        self._drv_fall_time.setValue(float(state.get("drv_fall_time_ps", 25.0)))
+        self._drv_fall_time.blockSignals(False)
+
+        self._drv_bitrate.blockSignals(True)
+        self._drv_bitrate.setValue(float(state.get("drv_bitrate_gbps", 10.0)))
+        self._drv_bitrate.blockSignals(False)
+
+        drv_prbs = str(state.get("drv_prbs", "PRBS-8"))
+        if self._drv_prbs.findText(drv_prbs) >= 0:
+            self._drv_prbs.blockSignals(True)
+            self._drv_prbs.setCurrentText(drv_prbs)
+            self._drv_prbs.blockSignals(False)
+
+        drv_encoding = str(state.get("drv_encoding", "8b10b"))
+        if self._drv_encoding.findText(drv_encoding) >= 0:
+            self._drv_encoding.blockSignals(True)
+            self._drv_encoding.setCurrentText(drv_encoding)
+            self._drv_encoding.blockSignals(False)
+
+        self._drv_num_bits.blockSignals(True)
+        self._drv_num_bits.setValue(int(state.get("drv_num_bits", 2**13)))
+        self._drv_num_bits.blockSignals(False)
+
+        self._pending_output_port_instance_id = state.get("drv_output_port_instance_id")
+        if self._pending_output_port_instance_id is not None:
+            self._refresh_output_port_list()
 
     def _export_equivalent_touchstone(self) -> None:
         format_choices = ["RI", "MA", "DB"]
