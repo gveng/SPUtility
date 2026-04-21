@@ -18,31 +18,43 @@ from sparams_utility.circuit_solver import ChannelSimResult
 
 DEFAULT_EYE_SPAN_UI = 2
 EYE_SPAN_CHOICES = (1, 2, 3)
-DEFAULT_RENDER_MODE = "Heatmap + Lines"
+DEFAULT_RENDER_MODE = "Heatmap"
 RENDER_MODE_CHOICES = ("Heatmap", "Lines", "Heatmap + Lines")
 DEFAULT_NOISE_RMS_MV: float = 0.0
 DEFAULT_JITTER_RMS_PS: float = 0.0
 
 
 def _make_blue_yellow_lut(n: int = 256) -> np.ndarray:
-    """Build a white→blue→yellow lookup table for the eye diagram heatmap."""
+    """Build an ADS-style heatmap LUT: white → navy → blue → cyan → green → yellow → orange."""
+    # Colour stops (t, R, G, B) mirroring the Keysight ADS eye diagram palette.
+    stops = [
+        (0.000, 255, 255, 255),   # white  – zero density (background)
+        (0.040, 255, 255, 255),   # white  – keep background clean for near-zero
+        (0.080,  10,  20, 130),   # dark navy
+        (0.220,   0,  60, 220),   # blue
+        (0.380,   0, 200, 240),   # cyan
+        (0.530,   0, 210,  80),   # cyan-green
+        (0.660,  80, 220,   0),   # yellow-green
+        (0.780, 240, 220,   0),   # yellow
+        (0.900, 255, 140,   0),   # orange
+        (1.000, 255, 190,   0),   # gold (peak)
+    ]
     lut = np.zeros((n, 4), dtype=np.uint8)
     for i in range(n):
         t = i / max(n - 1, 1)
-        if t == 0.0:
-            lut[i] = [255, 255, 255, 255]
-        elif t < 0.40:
-            s = t / 0.40
-            r = int(255 * (1.0 - s))
-            g = int(255 * (1.0 - s))
-            b = 255
-            lut[i] = [r, g, b, 255]
-        else:
-            s = (t - 0.40) / 0.60
-            r = int(100 + 155 * s)
-            g = int(200 * s)
-            b = int(255 * (1.0 - s))
-            lut[i] = [r, g, b, 255]
+        # Find bracketing stops and interpolate
+        for j in range(len(stops) - 1):
+            t0, r0, g0, b0 = stops[j]
+            t1, r1, g1, b1 = stops[j + 1]
+            if t <= t1:
+                s = (t - t0) / max(t1 - t0, 1e-9)
+                lut[i] = [
+                    int(r0 + (r1 - r0) * s),
+                    int(g0 + (g1 - g0) * s),
+                    int(b0 + (b1 - b0) * s),
+                    255,
+                ]
+                break
     return lut
 
 
@@ -251,6 +263,70 @@ def _find_best_eye_phase(
     return best_start
 
 
+def _compute_eye_summary(
+    segment_matrix: np.ndarray,
+    samples_per_ui: int,
+) -> dict[str, float]:
+    """Compute NRZ eye summary: Level1, Level0, Height, Width.
+
+    * Level1 / Level0 – median voltage of the upper / lower cluster sampled at
+      the centre of the UI window (eye decision point).
+    * Height – Level1 − Level0 (eye opening in voltage).
+    * Width  – fraction of the UI over which the eye remains open, expressed
+                in UI (0 … 1 for NRZ).  Estimated by finding the time range
+                around the centre where the upper and lower waveform envelopes
+                do not cross.
+    """
+    n_seg, n_samp = segment_matrix.shape
+    if n_seg < 4 or n_samp < 2:
+        return {"level1": float("nan"), "level0": float("nan"),
+                "height": float("nan"), "width": float("nan")}
+
+    # ── Vertical measurement at the UI centre ──────────────────────────────
+    c_radius = max(1, samples_per_ui // 8)
+    ci = n_samp // 2
+    c_start = max(0, ci - c_radius)
+    c_stop = min(n_samp, ci + c_radius + 1)
+    center_vals = segment_matrix[:, c_start:c_stop].mean(axis=1)
+    center_vals_sorted = np.sort(center_vals)
+
+    # Split into two clusters at the largest gap
+    gaps = np.diff(center_vals_sorted)
+    split_idx = int(np.argmax(gaps)) + 1
+    cluster0 = center_vals_sorted[:split_idx]
+    cluster1 = center_vals_sorted[split_idx:]
+    if cluster0.size < 2 or cluster1.size < 2:
+        return {"level1": float("nan"), "level0": float("nan"),
+                "height": float("nan"), "width": float("nan")}
+
+    level1 = float(np.median(cluster1))
+    level0 = float(np.median(cluster0))
+    height = level1 - level0
+
+    # ── Horizontal measurement (eye width) ─────────────────────────────────
+    # For each time sample compute the p5 (low envelope) and p95 (high envelope)
+    # Eye is "open" at a column when p5 of upper cluster > p95 of lower cluster
+    threshold = (level1 + level0) / 2.0
+    upper_mask = center_vals >= threshold
+    lower_mask = ~upper_mask
+
+    upper_segs = segment_matrix[upper_mask]
+    lower_segs = segment_matrix[lower_mask]
+
+    if upper_segs.shape[0] < 2 or lower_segs.shape[0] < 2:
+        width = float("nan")
+    else:
+        # per-column 5th/95th percentile
+        p5_upper = np.percentile(upper_segs, 5.0, axis=0)
+        p95_lower = np.percentile(lower_segs, 95.0, axis=0)
+        open_cols = p5_upper > p95_lower   # True where eye is open
+        # Count consecutive open columns around the centre
+        open_count = int(np.sum(open_cols))
+        width = float(open_count) / float(n_samp)  # in UI fraction
+
+    return {"level1": level1, "level0": level0, "height": height, "width": width}
+
+
 class EyeDiagramWindow(QMainWindow):
     span_changed = Signal(int)
     render_mode_changed = Signal(str)
@@ -322,15 +398,30 @@ class EyeDiagramWindow(QMainWindow):
         self._diagnostics_label.setWordWrap(True)
         layout.addWidget(self._diagnostics_label)
 
+        self._summary_label = QLabel()
+        self._summary_label.setWordWrap(True)
+        self._summary_label.setStyleSheet(
+            "QLabel { font-family: monospace; font-weight: 600; "
+            "background: #f0fdf4; border: 1px solid #86efac; "
+            "border-radius: 4px; padding: 3px 6px; }"
+        )
+        layout.addWidget(self._summary_label)
+        self._eye_summary: dict[str, float] = {}
+
         self._plot_widget = pg.PlotWidget()
         self._plot_widget.setBackground("w")
-        self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        self._plot_widget.showGrid(x=False, y=False)
         self._plot_widget.setLabel("bottom", "Time", units="UI")
         self._plot_widget.setLabel("left", "Voltage", units="V")
         self._plot_widget.setTitle("Eye Diagram")
         layout.addWidget(self._plot_widget)
 
         self._draw_eye_diagram()
+
+    @property
+    def eye_summary(self) -> dict[str, float]:
+        """Return the last-computed eye summary dict with keys: level1, level0, height, width."""
+        return dict(self._eye_summary)
 
     def _on_eye_span_changed(self, index: int) -> None:
         span_ui = self._eye_span_combo.itemData(index)
@@ -394,6 +485,8 @@ class EyeDiagramWindow(QMainWindow):
 
         if traces_drawn == 0:
             self._diagnostics_label.setText("Diagnostics: insufficient data to render eye diagram.")
+            self._summary_label.setText("")
+            self._eye_summary = {}
             self._plot_widget.setTitle("Eye Diagram (insufficient data)")
             return
 
@@ -432,14 +525,6 @@ class EyeDiagramWindow(QMainWindow):
             for i in range(max_line_traces):
                 self._plot_widget.plot(time_axis_ui, segment_matrix[i], pen=line_pen)
 
-        for marker_x in _decision_marker_positions(self._eye_span_ui):
-            marker = pg.InfiniteLine(
-                pos=marker_x,
-                angle=90,
-                pen=pg.mkPen(color=(80, 80, 80, 200), width=1, style=Qt.DashLine),
-            )
-            self._plot_widget.addItem(marker)
-
         half_span_ui = self._eye_span_ui / 2.0
         self._plot_widget.setXRange(-half_span_ui, half_span_ui, padding=0.0)
         self._plot_widget.setYRange(y_min, y_max, padding=0.0)
@@ -451,4 +536,30 @@ class EyeDiagramWindow(QMainWindow):
             "Diagnostics: "
             f"levels={expected_levels}, phase={selected_phase}/{samples_per_ui}, "
             f"score={score_text}, quality={quality}, traces={traces_drawn}, mode={self._render_mode}"
+        )
+
+        # ── Eye summary ────────────────────────────────────────────────────
+        summary = _compute_eye_summary(segment_matrix, samples_per_ui)
+        self._eye_summary = summary
+        lv1 = summary["level1"]
+        lv0 = summary["level0"]
+        ht = summary["height"]
+        wd = summary["width"]
+
+        def _fmt_v(v: float) -> str:
+            if not np.isfinite(v):
+                return "n/a"
+            if abs(v) >= 1.0:
+                return f"{v * 1000:.1f} mV"  # noqa: keep mV
+            return f"{v * 1000:.2f} mV"
+
+        def _fmt_mv(v: float) -> str:
+            return "n/a" if not np.isfinite(v) else f"{v * 1000:.2f} mV"
+
+        def _fmt_ui(v: float) -> str:
+            return "n/a" if not np.isfinite(v) else f"{v:.3f} UI"
+
+        self._summary_label.setText(
+            f"Eye Summary │  Level1: {_fmt_mv(lv1)}  │  Level0: {_fmt_mv(lv0)}"
+            f"  │  Height: {_fmt_mv(ht)}  │  Width: {_fmt_ui(wd)}"
         )

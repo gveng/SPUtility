@@ -157,7 +157,7 @@ def solve_circuit_network(document: CircuitDocument, state: AppState) -> Circuit
         y_global = np.zeros((node_count, node_count), dtype=np.complex128)
 
         for instance in document.instances:
-            if instance.block_kind in {"port_ground", "port_diff", "gnd", "driver_se", "driver_diff"}:
+            if instance.block_kind in {"port_ground", "port_diff", "gnd", "driver_se", "driver_diff", "eyescope_se", "eyescope_diff", "net_node"}:
                 continue
             if instance.block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
                 _stamp_lumped(instance, frequency, uf, grounded_roots, root_to_node, y_global)
@@ -820,6 +820,17 @@ def simulate_channel(
             else:
                 alpha = (f - freq_hz[idx - 1]) / (freq_hz[idx] - freq_hz[idx - 1])
                 h_freq[i] = (1 - alpha) * s21_freq[idx - 1] + alpha * s21_freq[idx]
+
+    # Convert S21 (power-wave ratio) to a voltage transfer function.
+    # S21 = b2/a1 where waves are normalised to their respective port Z0.
+    # The actual voltage at port 2 when driven by open-circuit source V_g at port 1 is:
+    #   V_out = V_g * S21 * sqrt(Z0_out / Z0_in) / 2
+    # Without this correction, output amplitude is off by sqrt(Z0_out/Z0_in)/2 ─ a
+    # factor of ~70 when driving a 100 Ω port into a 2 MΩ eyescope port.
+    z0_in = float(result.z0_ohm[driver_port_idx])
+    z0_out = float(result.z0_ohm[out_port_idx])
+    voltage_scale = math.sqrt(z0_out / z0_in) / 2.0
+    h_freq = h_freq * voltage_scale
 
     if is_diff:
         v_high = spec.voltage_high_v

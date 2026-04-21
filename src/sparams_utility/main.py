@@ -33,6 +33,11 @@ def run() -> int:
     if splash_path.exists():
         pixmap = QPixmap(str(splash_path))
         if not pixmap.isNull():
+            screen = app.primaryScreen()
+            screen_size = screen.size()
+            target_w = screen_size.width() // 2.5
+            target_h = screen_size.height() // 2.5
+            pixmap = pixmap.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             splash = QSplashScreen(pixmap)
             splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
             splash.show()

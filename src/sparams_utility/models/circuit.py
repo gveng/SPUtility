@@ -163,20 +163,31 @@ class CircuitConnection:
     connection_id: str
     port_a: CircuitPortRef
     port_b: CircuitPortRef
+    # Optional list of (x, y) waypoints that control the wire path.
+    # Each waypoint is a grid-snapped scene coordinate stored as a tuple.
+    waypoints: Tuple[Tuple[float, float], ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict:
-        return {
+        d: dict = {
             "connection_id": self.connection_id,
             "port_a": self.port_a.to_dict(),
             "port_b": self.port_b.to_dict(),
         }
+        if self.waypoints:
+            d["waypoints"] = [list(wp) for wp in self.waypoints]
+        return d
 
     @classmethod
     def from_dict(cls, payload: dict) -> "CircuitConnection":
+        raw_wp = payload.get("waypoints", [])
+        waypoints: Tuple[Tuple[float, float], ...] = tuple(
+            (float(w[0]), float(w[1])) for w in raw_wp if len(w) >= 2
+        )
         return cls(
             connection_id=str(payload.get("connection_id", "")),
             port_a=CircuitPortRef.from_dict(payload.get("port_a", {})),
             port_b=CircuitPortRef.from_dict(payload.get("port_b", {})),
+            waypoints=waypoints,
         )
 
 
@@ -406,11 +417,17 @@ class CircuitDocument:
         ]
         self.rebuild_external_ports_from_instances()
 
-    def add_connection(self, port_a: CircuitPortRef, port_b: CircuitPortRef) -> CircuitConnection:
+    def add_connection(
+        self,
+        port_a: CircuitPortRef,
+        port_b: CircuitPortRef,
+        waypoints: Tuple[Tuple[float, float], ...] = (),
+    ) -> CircuitConnection:
         connection = CircuitConnection(
             connection_id=self.next_connection_id(),
             port_a=port_a,
             port_b=port_b,
+            waypoints=waypoints,
         )
         self.connections.append(connection)
         return connection
@@ -418,11 +435,28 @@ class CircuitDocument:
     def remove_connection(self, connection_id: str) -> None:
         self.connections = [item for item in self.connections if item.connection_id != connection_id]
 
+    def update_connection_waypoints(
+        self, connection_id: str, waypoints: Tuple[Tuple[float, float], ...]
+    ) -> None:
+        self.connections = [
+            CircuitConnection(
+                connection_id=c.connection_id,
+                port_a=c.port_a,
+                port_b=c.port_b,
+                waypoints=waypoints,
+            )
+            if c.connection_id == connection_id
+            else c
+            for c in self.connections
+        ]
+
     def rebuild_external_ports_from_instances(self) -> None:
         external: List[ExternalPortAssignment] = []
         differential: List[DifferentialPortAssignment] = []
         index = 1
         for instance in self.instances:
+            if instance.block_kind in {"gnd", "net_node"}:
+                continue
             if instance.block_kind == "port_ground":
                 external.append(
                     ExternalPortAssignment(
@@ -452,6 +486,25 @@ class CircuitDocument:
                 index += 1
                 continue
             if instance.block_kind == "port_diff":
+                differential.append(
+                    DifferentialPortAssignment(
+                        external_port_number=index,
+                        port_ref_plus=CircuitPortRef(instance_id=instance.instance_id, port_number=1),
+                        port_ref_minus=CircuitPortRef(instance_id=instance.instance_id, port_number=2),
+                    )
+                )
+                index += 1
+                continue
+            if instance.block_kind == "eyescope_se":
+                external.append(
+                    ExternalPortAssignment(
+                        external_port_number=index,
+                        port_ref=CircuitPortRef(instance_id=instance.instance_id, port_number=1),
+                    )
+                )
+                index += 1
+                continue
+            if instance.block_kind == "eyescope_diff":
                 differential.append(
                     DifferentialPortAssignment(
                         external_port_number=index,
