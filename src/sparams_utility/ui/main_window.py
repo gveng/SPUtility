@@ -3,8 +3,9 @@ from __future__ import annotations
 from importlib import resources
 import json
 from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -28,6 +29,9 @@ from sparams_utility.ui.table_models import MagnitudeTableModel, RawDataTableMod
 from sparams_utility.ui.table_window import TableWindow
 
 
+_RECENT_ENTRIES_MAX = 12
+
+
 class MainWindow(QMainWindow):
     def __init__(self, state: AppState) -> None:
         super().__init__()
@@ -43,6 +47,9 @@ class MainWindow(QMainWindow):
         self._circuit_counter: int = 0
         self._project_dirty: bool = False
         self._project_path: str | None = None
+        self._recent_projects: list[str] = []
+        self._recent_sparams: list[str] = []
+        self._load_recent_entries()
 
         # MDI area as central widget — all sub-windows live here
         self._mdi = QMdiArea()
@@ -56,6 +63,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction("Save Project", self._save_project)
         file_menu.addAction("Save Project As", self._save_project_as)
         file_menu.addAction("Open File", self._open_files)
+        self._recent_projects_menu = file_menu.addMenu("Recent Projects")
+        self._recent_sparams_menu = file_menu.addMenu("Recent S-Parameters")
+        self._rebuild_recent_file_menus()
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
 
@@ -94,14 +104,108 @@ class MainWindow(QMainWindow):
 
     # ── File loading ──────────────────────────────────────────────────────
 
-    def _open_files(self) -> None:
-        files, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Open Touchstone file",
-            "",
-            "Touchstone (*.s1p *.s2p *.s3p *.s4p *.s5p *.s6p *.s7p *.s8p *.s9p"
-            " *.s10p *.s12p *.s16p *.ts);;All files (*)",
-        )
+    def _settings(self) -> QSettings:
+        return QSettings("SPUtility", "SPUtility")
+
+    def _load_recent_entries(self) -> None:
+        settings = self._settings()
+        recent_projects = settings.value("recent_projects", [], type=list)
+        recent_sparams = settings.value("recent_sparams", [], type=list)
+
+        self._recent_projects = [
+            str(p) for p in recent_projects if isinstance(p, str) and p.strip()
+        ][:_RECENT_ENTRIES_MAX]
+        self._recent_sparams = [
+            str(p) for p in recent_sparams if isinstance(p, str) and p.strip()
+        ][:_RECENT_ENTRIES_MAX]
+
+    def _save_recent_entries(self) -> None:
+        settings = self._settings()
+        settings.setValue("recent_projects", self._recent_projects)
+        settings.setValue("recent_sparams", self._recent_sparams)
+
+    def _normalize_path(self, file_path: str) -> str:
+        try:
+            return str(Path(file_path).expanduser().resolve())
+        except (OSError, RuntimeError):
+            return str(file_path)
+
+    def _push_recent_project(self, file_path: str) -> None:
+        normalized = self._normalize_path(file_path)
+        self._recent_projects = [p for p in self._recent_projects if p != normalized]
+        self._recent_projects.insert(0, normalized)
+        self._recent_projects = self._recent_projects[:_RECENT_ENTRIES_MAX]
+        self._save_recent_entries()
+        self._rebuild_recent_file_menus()
+
+    def _push_recent_sparam(self, file_path: str) -> None:
+        normalized = self._normalize_path(file_path)
+        self._recent_sparams = [p for p in self._recent_sparams if p != normalized]
+        self._recent_sparams.insert(0, normalized)
+        self._recent_sparams = self._recent_sparams[:_RECENT_ENTRIES_MAX]
+        self._save_recent_entries()
+        self._rebuild_recent_file_menus()
+
+    def _clear_recent_projects(self) -> None:
+        self._recent_projects = []
+        self._save_recent_entries()
+        self._rebuild_recent_file_menus()
+
+    def _clear_recent_sparams(self) -> None:
+        self._recent_sparams = []
+        self._save_recent_entries()
+        self._rebuild_recent_file_menus()
+
+    def _rebuild_recent_file_menus(self) -> None:
+        self._recent_projects_menu.clear()
+        if not self._recent_projects:
+            action = self._recent_projects_menu.addAction("No recent projects")
+            action.setEnabled(False)
+        else:
+            for index, path in enumerate(self._recent_projects, start=1):
+                label = f"{index}. {Path(path).name}"
+                action = self._recent_projects_menu.addAction(label)
+                action.setToolTip(path)
+                action.triggered.connect(
+                    lambda checked=False, p=path: self._open_recent_project(p)
+                )
+            self._recent_projects_menu.addSeparator()
+            self._recent_projects_menu.addAction("Clear project history", self._clear_recent_projects)
+
+        self._recent_sparams_menu.clear()
+        if not self._recent_sparams:
+            action = self._recent_sparams_menu.addAction("No recent S-parameter files")
+            action.setEnabled(False)
+        else:
+            for index, path in enumerate(self._recent_sparams, start=1):
+                label = f"{index}. {Path(path).name}"
+                action = self._recent_sparams_menu.addAction(label)
+                action.setToolTip(path)
+                action.triggered.connect(
+                    lambda checked=False, p=path: self._open_recent_sparam(p)
+                )
+            self._recent_sparams_menu.addSeparator()
+            self._recent_sparams_menu.addAction("Clear S-parameter history", self._clear_recent_sparams)
+
+    def _open_recent_project(self, file_path: str) -> None:
+        if not Path(file_path).exists():
+            self._recent_projects = [p for p in self._recent_projects if p != file_path]
+            self._save_recent_entries()
+            self._rebuild_recent_file_menus()
+            QMessageBox.warning(self, "Missing file", f"Project file not found:\n{file_path}")
+            return
+        self._load_project_from_path(file_path)
+
+    def _open_recent_sparam(self, file_path: str) -> None:
+        if not Path(file_path).exists():
+            self._recent_sparams = [p for p in self._recent_sparams if p != file_path]
+            self._save_recent_entries()
+            self._rebuild_recent_file_menus()
+            QMessageBox.warning(self, "Missing file", f"S-parameter file not found:\n{file_path}")
+            return
+        self._load_touchstone_files([file_path])
+
+    def _load_touchstone_files(self, files: list[str]) -> None:
         if not files:
             return
 
@@ -116,6 +220,23 @@ class MainWindow(QMainWindow):
             )
         elif added_count > 0:
             self._mark_project_dirty()
+
+        for path in files:
+            if Path(path).exists():
+                self._push_recent_sparam(path)
+
+    def _open_files(self) -> None:
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Open Touchstone file",
+            "",
+            "Touchstone (*.s1p *.s2p *.s3p *.s4p *.s5p *.s6p *.s7p *.s8p *.s9p"
+            " *.s10p *.s12p *.s16p *.ts);;All files (*)",
+        )
+        if not files:
+            return
+
+        self._load_touchstone_files(files)
 
     def _build_project_payload(self) -> dict:
         loaded_files = self._state.get_loaded_files()
@@ -167,6 +288,7 @@ class MainWindow(QMainWindow):
 
         self._project_path = file_path
         self._project_dirty = False
+        self._push_recent_project(file_path)
         QMessageBox.information(self, "Project saved", f"Project saved to:\n{file_path}")
         return True
 
@@ -197,6 +319,10 @@ class MainWindow(QMainWindow):
         )
         if not file_path:
             return
+
+        self._load_project_from_path(file_path)
+
+    def _load_project_from_path(self, file_path: str) -> None:
 
         try:
             with open(file_path, "r", encoding="utf-8") as fp:
@@ -298,6 +424,7 @@ class MainWindow(QMainWindow):
             )
         self._project_path = file_path
         self._project_dirty = False
+        self._push_recent_project(file_path)
 
     # ── Tables menu ───────────────────────────────────────────────────────
 
@@ -445,9 +572,9 @@ class MainWindow(QMainWindow):
 
     def _show_help(self) -> None:
         try:
-            help_html = resources.files("sparams_utility.resources.help").joinpath(
+            help_resource = resources.files("sparams_utility.resources.help").joinpath(
                 "help_en.html"
-            ).read_text(encoding="utf-8")
+            )
         except (FileNotFoundError, ModuleNotFoundError, OSError) as exc:
             QMessageBox.warning(
                 self,
@@ -464,10 +591,10 @@ class MainWindow(QMainWindow):
         browser = QTextBrowser(dlg)
         browser.setOpenExternalLinks(True)
         browser.setReadOnly(True)
-        browser.setHtml(help_html)
-        layout.addWidget(browser)
-
-        dlg.exec()
+        with resources.as_file(help_resource) as help_path:
+            browser.setSource(QUrl.fromLocalFile(str(help_path)))
+            layout.addWidget(browser)
+            dlg.exec()
 
     def _show_about(self) -> None:
         dlg = QDialog(self)

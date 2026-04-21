@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import pyqtgraph as pg
+from scipy.ndimage import gaussian_filter
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,25 +23,31 @@ from sparams_utility.circuit_solver import ChannelSimResult
 DEFAULT_EYE_SPAN_UI = 2
 EYE_SPAN_CHOICES = (1, 2, 3)
 DEFAULT_RENDER_MODE = "Heatmap"
-RENDER_MODE_CHOICES = ("Heatmap", "Lines", "Heatmap + Lines")
+RENDER_MODE_CHOICES = ("Heatmap", "Heatmap + Lines", "Lines")
+DEFAULT_QUALITY_PRESET = "Balanced"
+QUALITY_PRESET_CHOICES = ("Fast", "Balanced", "HighRes")
 DEFAULT_NOISE_RMS_MV: float = 0.0
 DEFAULT_JITTER_RMS_PS: float = 0.0
+DEFAULT_MAX_EYE_TRACES: int = 20000
+DEFAULT_HEATMAP_X_BINS: int = 360
+DEFAULT_HEATMAP_Y_BINS: int = 280
 
 
 def _make_blue_yellow_lut(n: int = 256) -> np.ndarray:
-    """Build an ADS-style heatmap LUT: white → navy → blue → cyan → green → yellow → orange."""
-    # Colour stops (t, R, G, B) mirroring the Keysight ADS eye diagram palette.
+    """Build an ADS-style heatmap LUT: white → blue → cyan → green → yellow."""
+    # Colour stops (t, R, G, B) — tuned to match Keysight ADS eye palette.
+    # Background stays white; low-density traces are blue; crossings are yellow.
     stops = [
-        (0.000, 255, 255, 255),   # white  – zero density (background)
-        (0.040, 255, 255, 255),   # white  – keep background clean for near-zero
-        (0.080,  10,  20, 130),   # dark navy
-        (0.220,   0,  60, 220),   # blue
-        (0.380,   0, 200, 240),   # cyan
-        (0.530,   0, 210,  80),   # cyan-green
-        (0.660,  80, 220,   0),   # yellow-green
-        (0.780, 240, 220,   0),   # yellow
-        (0.900, 255, 140,   0),   # orange
-        (1.000, 255, 190,   0),   # gold (peak)
+        (0.000, 255, 255, 255),   # white  – zero / background
+        (0.030, 255, 255, 255),   # white  – keep background clean
+        (0.080,  20,  40, 200),   # medium blue  (sparse traces)
+        (0.200,   0, 100, 255),   # bright blue
+        (0.360,   0, 210, 240),   # cyan
+        (0.500,   0, 220, 180),   # cyan-green
+        (0.640,  30, 220,  60),   # green
+        (0.790, 180, 240,   0),   # yellow-green
+        (0.920, 255, 240,   0),   # yellow
+        (1.000, 255, 255,  80),   # bright yellow (peak)
     ]
     lut = np.zeros((n, 4), dtype=np.uint8)
     for i in range(n):
@@ -64,6 +74,53 @@ def _normalize_eye_span_ui(span_ui: int) -> int:
 
 def _normalize_render_mode(render_mode: str) -> str:
     return render_mode if render_mode in RENDER_MODE_CHOICES else DEFAULT_RENDER_MODE
+
+
+def _normalize_quality_preset(quality_preset: str) -> str:
+    return quality_preset if quality_preset in QUALITY_PRESET_CHOICES else DEFAULT_QUALITY_PRESET
+
+
+def _eye_render_config(quality_preset: str, n_workers: int) -> dict[str, float | int]:
+    quality = _normalize_quality_preset(quality_preset)
+    if quality == "Fast":
+        return {
+            "max_traces": 6000,
+            "x_bins": 220,
+            "y_bins": 180,
+            "smooth_sigma": 0.9,
+            "max_line_traces": 800,
+        }
+    if quality == "HighRes":
+        if n_workers >= 16:
+            return {
+                "max_traces": 100000,
+                "x_bins": 800,
+                "y_bins": 600,
+                "smooth_sigma": 1.4,
+                "max_line_traces": 7000,
+            }
+        if n_workers >= 12:
+            return {
+                "max_traces": 80000,
+                "x_bins": 720,
+                "y_bins": 560,
+                "smooth_sigma": 1.3,
+                "max_line_traces": 5600,
+            }
+        return {
+            "max_traces": 60000,
+            "x_bins": 640,
+            "y_bins": 480,
+            "smooth_sigma": 1.2,
+            "max_line_traces": 4200,
+        }
+    return {
+        "max_traces": DEFAULT_MAX_EYE_TRACES,
+        "x_bins": DEFAULT_HEATMAP_X_BINS,
+        "y_bins": DEFAULT_HEATMAP_Y_BINS,
+        "smooth_sigma": 1.1,
+        "max_line_traces": 2000,
+    }
 
 
 def _expected_eye_levels_for_encoding(encoding: str) -> int:
@@ -103,8 +160,8 @@ def _compute_voltage_limits(segments: np.ndarray) -> tuple[float, float]:
 def _build_eye_density(
     segments: np.ndarray,
     time_axis_ui: np.ndarray,
-    x_bins: int = 260,
-    y_bins: int = 220,
+    x_bins: int = DEFAULT_HEATMAP_X_BINS,
+    y_bins: int = DEFAULT_HEATMAP_Y_BINS,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     x_values = np.tile(time_axis_ui, segments.shape[0])
     y_values = segments.ravel()
@@ -114,6 +171,92 @@ def _build_eye_density(
     y_edges = np.linspace(y_min, y_max, y_bins + 1)
 
     density, _, _ = np.histogram2d(x_values, y_values, bins=[x_edges, y_edges])
+    return density, x_edges, y_edges
+
+
+def _chunk_slices(n_items: int, n_chunks: int) -> list[slice]:
+    if n_items <= 0:
+        return []
+    n_chunks = max(1, min(n_chunks, n_items))
+    base = n_items // n_chunks
+    extra = n_items % n_chunks
+    out: list[slice] = []
+    start = 0
+    for i in range(n_chunks):
+        size = base + (1 if i < extra else 0)
+        stop = start + size
+        out.append(slice(start, stop))
+        start = stop
+    return out
+
+
+def _collect_segments_no_jitter_parallel(
+    waveform: np.ndarray,
+    positions: np.ndarray,
+    overlay_samples: int,
+    max_traces: int,
+    n_workers: int,
+) -> np.ndarray:
+    if positions.size == 0:
+        return np.empty((0, overlay_samples), dtype=float)
+    positions = positions[:max_traces]
+    if positions.size == 0:
+        return np.empty((0, overlay_samples), dtype=float)
+
+    idx_offsets = np.arange(overlay_samples, dtype=np.int64)
+
+    def _worker(chunk: np.ndarray) -> np.ndarray:
+        if chunk.size == 0:
+            return np.empty((0, overlay_samples), dtype=float)
+        idx = chunk[:, None] + idx_offsets[None, :]
+        return waveform[idx]
+
+    if n_workers <= 1 or positions.size < 2048:
+        return _worker(positions.astype(np.int64, copy=False)).astype(float, copy=False)
+
+    slices = _chunk_slices(int(positions.size), n_workers)
+    chunks = [positions[s].astype(np.int64, copy=False) for s in slices]
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        mats = list(ex.map(_worker, chunks))
+    mats = [m for m in mats if m.size]
+    if not mats:
+        return np.empty((0, overlay_samples), dtype=float)
+    return np.vstack(mats).astype(float, copy=False)
+
+
+def _build_eye_density_parallel(
+    segments: np.ndarray,
+    time_axis_ui: np.ndarray,
+    x_bins: int,
+    y_bins: int,
+    n_workers: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    x_edges = np.linspace(float(time_axis_ui[0]), float(time_axis_ui[-1]), x_bins + 1)
+    y_min, y_max = _compute_voltage_limits(segments)
+    y_edges = np.linspace(y_min, y_max, y_bins + 1)
+
+    n_rows = int(segments.shape[0])
+    if n_workers <= 1 or n_rows < 1500:
+        density, _, _ = np.histogram2d(
+            np.tile(time_axis_ui, n_rows),
+            segments.ravel(),
+            bins=[x_edges, y_edges],
+        )
+        return density, x_edges, y_edges
+
+    def _worker(chunk: np.ndarray) -> np.ndarray:
+        if chunk.size == 0:
+            return np.zeros((x_bins, y_bins), dtype=float)
+        x_vals = np.tile(time_axis_ui, chunk.shape[0])
+        y_vals = chunk.ravel()
+        d, _, _ = np.histogram2d(x_vals, y_vals, bins=[x_edges, y_edges])
+        return d
+
+    slices = _chunk_slices(n_rows, n_workers)
+    chunks = [segments[s, :] for s in slices]
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        parts = list(ex.map(_worker, chunks))
+    density = np.sum(parts, axis=0)
     return density, x_edges, y_edges
 
 
@@ -271,11 +414,9 @@ def _compute_eye_summary(
 
     * Level1 / Level0 – median voltage of the upper / lower cluster sampled at
       the centre of the UI window (eye decision point).
-    * Height – Level1 − Level0 (eye opening in voltage).
-    * Width  – fraction of the UI over which the eye remains open, expressed
-                in UI (0 … 1 for NRZ).  Estimated by finding the time range
-                around the centre where the upper and lower waveform envelopes
-                do not cross.
+    * Height – vertical eye opening at the decision centre.
+    * Width  – horizontal opening of the central eye, measured as the
+                contiguous open interval around the centre, in UI.
     """
     n_seg, n_samp = segment_matrix.shape
     if n_seg < 4 or n_samp < 2:
@@ -301,7 +442,6 @@ def _compute_eye_summary(
 
     level1 = float(np.median(cluster1))
     level0 = float(np.median(cluster0))
-    height = level1 - level0
 
     # ── Horizontal measurement (eye width) ─────────────────────────────────
     # For each time sample compute the p5 (low envelope) and p95 (high envelope)
@@ -314,22 +454,73 @@ def _compute_eye_summary(
     lower_segs = segment_matrix[lower_mask]
 
     if upper_segs.shape[0] < 2 or lower_segs.shape[0] < 2:
+        height = float("nan")
         width = float("nan")
     else:
         # per-column 5th/95th percentile
         p5_upper = np.percentile(upper_segs, 5.0, axis=0)
         p95_lower = np.percentile(lower_segs, 95.0, axis=0)
         open_cols = p5_upper > p95_lower   # True where eye is open
-        # Count consecutive open columns around the centre
-        open_count = int(np.sum(open_cols))
-        width = float(open_count) / float(n_samp)  # in UI fraction
+
+        # Height at decision centre (green arrow in reference figure).
+        center_col = n_samp // 2
+        height = float(p5_upper[center_col] - p95_lower[center_col])
+
+        # Width of the central eye: contiguous open interval around centre
+        # (red arrow in reference figure), expressed in UI.
+        if not bool(open_cols[center_col]):
+            width = 0.0
+        else:
+            left = center_col
+            while left > 0 and bool(open_cols[left - 1]):
+                left -= 1
+            right = center_col
+            while right < (n_samp - 1) and bool(open_cols[right + 1]):
+                right += 1
+            open_count = right - left + 1
+            width = float(open_count) / float(max(samples_per_ui, 1))
 
     return {"level1": level1, "level0": level0, "height": height, "width": width}
+
+
+def _eye_opening_profile(segment_matrix: np.ndarray) -> np.ndarray:
+    """Return per-column opening estimate as the largest vertical gap.
+
+    For each time column, sort all trace voltages and use the maximum adjacent
+    gap as the eye opening estimator. This is robust for NRZ and works well to
+    locate the decision region center.
+    """
+    n_seg, n_samp = segment_matrix.shape
+    if n_seg < 4 or n_samp < 2:
+        return np.zeros(n_samp, dtype=float)
+
+    # Vectorized per-column max gap (much faster than Python loop).
+    sorted_cols = np.sort(segment_matrix, axis=0)
+    gaps = np.diff(sorted_cols, axis=0)
+    return np.max(gaps, axis=0)
+
+
+def _best_opening_index_near_center(opening: np.ndarray) -> int:
+    if opening.size == 0:
+        return 0
+    center = opening.size // 2
+    max_open = float(np.max(opening))
+    if not np.isfinite(max_open) or max_open <= 0.0:
+        return center
+
+    # Keep near-maximum candidates, then choose the one closest to center.
+    threshold = max_open * 0.98
+    candidates = np.where(opening >= threshold)[0]
+    if candidates.size == 0:
+        return int(np.argmax(opening))
+    nearest = int(candidates[np.argmin(np.abs(candidates - center))])
+    return nearest
 
 
 class EyeDiagramWindow(QMainWindow):
     span_changed = Signal(int)
     render_mode_changed = Signal(str)
+    quality_preset_changed = Signal(str)
 
     def __init__(
         self,
@@ -338,6 +529,7 @@ class EyeDiagramWindow(QMainWindow):
         parent=None,
         initial_span_ui: int = DEFAULT_EYE_SPAN_UI,
         initial_render_mode: str = DEFAULT_RENDER_MODE,
+        initial_quality_preset: str = DEFAULT_QUALITY_PRESET,
         statistical_enabled: bool = False,
         noise_rms_mv: float = DEFAULT_NOISE_RMS_MV,
         jitter_rms_ps: float = DEFAULT_JITTER_RMS_PS,
@@ -352,6 +544,7 @@ class EyeDiagramWindow(QMainWindow):
         self._result = result
         self._eye_span_ui = _normalize_eye_span_ui(int(initial_span_ui))
         self._render_mode = _normalize_render_mode(str(initial_render_mode))
+        self._quality_preset = _normalize_quality_preset(str(initial_quality_preset))
         self._statistical_enabled: bool = bool(statistical_enabled)
         self._noise_rms_mv: float = float(noise_rms_mv)
         self._jitter_rms_ps: float = float(jitter_rms_ps)
@@ -392,6 +585,16 @@ class EyeDiagramWindow(QMainWindow):
         self._render_mode_combo.currentIndexChanged.connect(self._on_render_mode_changed)
         info_layout.addWidget(QLabel("Render"))
         info_layout.addWidget(self._render_mode_combo)
+
+        self._quality_preset_combo = QComboBox()
+        for preset in QUALITY_PRESET_CHOICES:
+            self._quality_preset_combo.addItem(preset, preset)
+        quality_index = self._quality_preset_combo.findData(self._quality_preset)
+        if quality_index >= 0:
+            self._quality_preset_combo.setCurrentIndex(quality_index)
+        self._quality_preset_combo.currentIndexChanged.connect(self._on_quality_preset_changed)
+        info_layout.addWidget(QLabel("Quality"))
+        info_layout.addWidget(self._quality_preset_combo)
         layout.addLayout(info_layout)
 
         self._diagnostics_label = QLabel()
@@ -401,18 +604,26 @@ class EyeDiagramWindow(QMainWindow):
         self._summary_label = QLabel()
         self._summary_label.setWordWrap(True)
         self._summary_label.setStyleSheet(
-            "QLabel { font-family: monospace; font-weight: 600; "
-            "background: #f0fdf4; border: 1px solid #86efac; "
-            "border-radius: 4px; padding: 3px 6px; }"
+            "QLabel { "
+            "font-family: Consolas, 'Courier New', monospace; "
+            "font-weight: 700; "
+            "font-size: 12px; "
+            "color: #052e16; "
+            "background: #ecfdf5; "
+            "border: 1px solid #16a34a; "
+            "border-radius: 4px; "
+            "padding: 4px 8px; "
+            "}"
         )
+        self._summary_label.setMinimumHeight(26)
         layout.addWidget(self._summary_label)
         self._eye_summary: dict[str, float] = {}
 
         self._plot_widget = pg.PlotWidget()
         self._plot_widget.setBackground("w")
-        self._plot_widget.showGrid(x=False, y=False)
-        self._plot_widget.setLabel("bottom", "Time", units="UI")
-        self._plot_widget.setLabel("left", "Voltage", units="V")
+        self._plot_widget.showGrid(x=True, y=True, alpha=0.22)
+        self._plot_widget.setLabel("bottom", "time, UI", color="#cc1a00", size="11pt")
+        self._plot_widget.setLabel("left", "Density", color="#cc1a00", size="11pt")
         self._plot_widget.setTitle("Eye Diagram")
         layout.addWidget(self._plot_widget)
 
@@ -420,7 +631,13 @@ class EyeDiagramWindow(QMainWindow):
 
     @property
     def eye_summary(self) -> dict[str, float]:
-        """Return the last-computed eye summary dict with keys: level1, level0, height, width."""
+        """Return last-computed eye summary.
+
+        Keys:
+        - level1, level0, height: volts
+        - width: UI
+        - width_ps: picoseconds
+        """
         return dict(self._eye_summary)
 
     def _on_eye_span_changed(self, index: int) -> None:
@@ -439,12 +656,23 @@ class EyeDiagramWindow(QMainWindow):
         self.render_mode_changed.emit(self._render_mode)
         self._draw_eye_diagram()
 
+    def _on_quality_preset_changed(self, index: int) -> None:
+        quality_preset = self._quality_preset_combo.itemData(index)
+        if quality_preset is None:
+            return
+        self._quality_preset = _normalize_quality_preset(str(quality_preset))
+        self.quality_preset_changed.emit(self._quality_preset)
+        self._draw_eye_diagram()
+
     def _draw_eye_diagram(self) -> None:
         self._plot_widget.clear()
         result = self._result
         ui_s = result.ui_s
         dt = result.time_s[1] - result.time_s[0] if len(result.time_s) > 1 else 1e-12
         samples_per_ui = max(1, int(round(ui_s / dt)))
+        n_workers = max(1, os.cpu_count() or 1)
+        render_cfg = _eye_render_config(self._quality_preset, n_workers)
+        max_eye_traces = int(render_cfg["max_traces"])
 
         waveform = result.waveform_v
         total_samples = len(waveform)
@@ -466,22 +694,42 @@ class EyeDiagramWindow(QMainWindow):
             expected_levels=expected_levels,
         )
 
-        traces_drawn = 0
-        segments: list[np.ndarray] = []
-        pos = start_sample
         _use_jitter = self._statistical_enabled and self._jitter_rms_ps > 0.0
         _jitter_sigma_samples = (self._jitter_rms_ps * 1e-12 / dt) if _use_jitter else 0.0
         _rng = np.random.default_rng() if (self._statistical_enabled and (self._jitter_rms_ps > 0.0 or self._noise_rms_mv > 0.0)) else None
-        while pos + overlay_samples <= end_sample and traces_drawn < 5000:
+
+        def _collect_segments(start_at: int) -> tuple[np.ndarray, int]:
+            traces = 0
+            max_start = end_sample - overlay_samples
+            if max_start < start_at:
+                return np.empty((0, overlay_samples), dtype=float), 0
+
+            positions = np.arange(start_at, max_start + 1, samples_per_ui, dtype=np.int64)
+            if positions.size == 0:
+                return np.empty((0, overlay_samples), dtype=float), 0
+
             if _use_jitter and _rng is not None and _jitter_sigma_samples > 0.0:
-                jitter_shift = int(_rng.normal(0.0, _jitter_sigma_samples))
-                actual_pos = max(0, min(pos + jitter_shift, end_sample - overlay_samples))
-            else:
-                actual_pos = pos
-            segment = waveform[actual_pos: actual_pos + overlay_samples]
-            segments.append(segment)
-            pos += samples_per_ui
-            traces_drawn += 1
+                positions = positions[:max_eye_traces]
+                jitter = _rng.normal(0.0, _jitter_sigma_samples, size=positions.size).astype(np.int64)
+                actual = positions + jitter
+                actual = np.clip(actual, 0, max_start)
+                idx_offsets = np.arange(overlay_samples, dtype=np.int64)
+                idx = actual[:, None] + idx_offsets[None, :]
+                segs = waveform[idx].astype(float, copy=False)
+                traces = int(segs.shape[0])
+                return segs, traces
+
+            segs = _collect_segments_no_jitter_parallel(
+                waveform,
+                positions,
+                overlay_samples,
+                max_eye_traces,
+                n_workers,
+            )
+            traces = int(segs.shape[0])
+            return segs, traces
+
+        segment_matrix, traces_drawn = _collect_segments(start_sample)
 
         if traces_drawn == 0:
             self._diagnostics_label.setText("Diagnostics: insufficient data to render eye diagram.")
@@ -490,7 +738,15 @@ class EyeDiagramWindow(QMainWindow):
             self._plot_widget.setTitle("Eye Diagram (insufficient data)")
             return
 
-        segment_matrix = np.asarray(segments, dtype=float)
+        # Center decision region on maximum eye opening.
+        opening_profile = _eye_opening_profile(segment_matrix)
+        opening_idx = _best_opening_index_near_center(opening_profile)
+        center_idx = overlay_samples // 2
+        phase_shift_samples = opening_idx - center_idx
+        if phase_shift_samples != 0:
+            start_sample = max(margin, min(start_sample + phase_shift_samples, end_sample - overlay_samples))
+            segment_matrix, traces_drawn = _collect_segments(start_sample)
+
         if self._statistical_enabled and self._noise_rms_mv > 0.0 and _rng is not None:
             segment_matrix = segment_matrix + _rng.normal(0.0, self._noise_rms_mv * 1e-3, segment_matrix.shape)
         render_heatmap = self._render_mode in {"Heatmap", "Heatmap + Lines"}
@@ -499,8 +755,25 @@ class EyeDiagramWindow(QMainWindow):
         y_min: float
         y_max: float
         if render_heatmap:
-            density, x_edges, y_edges = _build_eye_density(segment_matrix, time_axis_ui)
+            density, x_edges, y_edges = _build_eye_density_parallel(
+                segment_matrix,
+                time_axis_ui,
+                x_bins=int(render_cfg["x_bins"]),
+                y_bins=int(render_cfg["y_bins"]),
+                n_workers=n_workers,
+            )
+            # log1p gives a smooth gradient from sparse (blue) to dense (yellow).
+            # Power-law ^0.35 was making every non-zero bin map to maximum (binary look).
             density_image = np.log1p(density)
+            density_image = gaussian_filter(density_image, sigma=float(render_cfg["smooth_sigma"]))
+
+            # Clip top 0.5% so bright crossing pixels don't wash out the colour scale.
+            foreground = density_image[density_image > 0]
+            if foreground.size > 0:
+                p_high = float(np.percentile(foreground, 99.5))
+            else:
+                p_high = 1e-6
+            p_high = max(p_high, 1e-6)
 
             image_item = pg.ImageItem(density_image, axisOrder="col-major")
             image_item.setRect(
@@ -512,8 +785,7 @@ class EyeDiagramWindow(QMainWindow):
                 )
             )
             image_item.setLookupTable(_make_blue_yellow_lut())
-            max_level = float(np.max(density_image))
-            image_item.setLevels((0.0, max(1e-6, max_level)))
+            image_item.setLevels((0.0, p_high))
             self._plot_widget.addItem(image_item)
             y_min, y_max = float(y_edges[0]), float(y_edges[-1])
         else:
@@ -521,7 +793,7 @@ class EyeDiagramWindow(QMainWindow):
 
         if render_lines:
             line_pen = pg.mkPen(color=(0, 0, 150, 60) if render_heatmap else (30, 80, 180, 45), width=1)
-            max_line_traces = min(traces_drawn, 2000)
+            max_line_traces = min(traces_drawn, int(render_cfg["max_line_traces"]))
             for i in range(max_line_traces):
                 self._plot_widget.plot(time_axis_ui, segment_matrix[i], pen=line_pen)
 
@@ -535,16 +807,25 @@ class EyeDiagramWindow(QMainWindow):
         self._diagnostics_label.setText(
             "Diagnostics: "
             f"levels={expected_levels}, phase={selected_phase}/{samples_per_ui}, "
-            f"score={score_text}, quality={quality}, traces={traces_drawn}, mode={self._render_mode}"
+            f"score={score_text}, quality={quality}, traces={traces_drawn}, "
+            f"mode={self._render_mode}, preset={self._quality_preset}"
         )
 
         # ── Eye summary ────────────────────────────────────────────────────
         summary = _compute_eye_summary(segment_matrix, samples_per_ui)
-        self._eye_summary = summary
+        width_ui = summary.get("width", float("nan"))
+        width_ps = (
+            float(width_ui) * float(ui_s) * 1e12
+            if np.isfinite(width_ui)
+            else float("nan")
+        )
+        summary_out = dict(summary)
+        summary_out["width_ps"] = width_ps
+        self._eye_summary = summary_out
         lv1 = summary["level1"]
         lv0 = summary["level0"]
         ht = summary["height"]
-        wd = summary["width"]
+        wd_ps = width_ps
 
         def _fmt_v(v: float) -> str:
             if not np.isfinite(v):
@@ -556,10 +837,13 @@ class EyeDiagramWindow(QMainWindow):
         def _fmt_mv(v: float) -> str:
             return "n/a" if not np.isfinite(v) else f"{v * 1000:.2f} mV"
 
-        def _fmt_ui(v: float) -> str:
-            return "n/a" if not np.isfinite(v) else f"{v:.3f} UI"
+        def _fmt_ps(v: float) -> str:
+            return "n/a" if not np.isfinite(v) else f"{v:.2f} ps"
 
         self._summary_label.setText(
-            f"Eye Summary │  Level1: {_fmt_mv(lv1)}  │  Level0: {_fmt_mv(lv0)}"
-            f"  │  Height: {_fmt_mv(ht)}  │  Width: {_fmt_ui(wd)}"
+            "MEASUREMENTS  |  "
+            f"Level1: {_fmt_mv(lv1)}  |  "
+            f"Level0: {_fmt_mv(lv0)}  |  "
+            f"Height: {_fmt_mv(ht)}  |  "
+            f"Width: {_fmt_ps(wd_ps)}"
         )

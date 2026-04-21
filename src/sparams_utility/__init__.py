@@ -1,4 +1,4 @@
-__version__ = "1.9"
+__version__ = "2.0"
 __app_name__ = "SPUtility"
 __author__ = "Gabriele Vittori"
 

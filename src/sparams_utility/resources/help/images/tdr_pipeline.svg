@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="250" viewBox="0 0 860 250">
+  <rect x="0" y="0" width="860" height="250" fill="#ffffff"/>
+  <text x="26" y="26" font-family="Segoe UI, Arial" font-size="16" fill="#1f3c88">TDR processing pipeline</text>
+
+  <rect x="30" y="60" width="150" height="60" rx="8" fill="#e8f1ff" stroke="#96b7e6"/>
+  <text x="45" y="95" font-family="Segoe UI, Arial" font-size="13" fill="#1e3a8a">Sii(f) selected</text>
+
+  <rect x="210" y="60" width="170" height="60" rx="8" fill="#eefdf3" stroke="#7ccf98"/>
+  <text x="224" y="88" font-family="Segoe UI, Arial" font-size="13" fill="#166534">Uniform grid /</text>
+  <text x="224" y="106" font-family="Segoe UI, Arial" font-size="13" fill="#166534">interpolation</text>
+
+  <rect x="410" y="60" width="150" height="60" rx="8" fill="#fff7e7" stroke="#f2bb5d"/>
+  <text x="424" y="88" font-family="Segoe UI, Arial" font-size="13" fill="#92400e">Windowing</text>
+  <text x="424" y="106" font-family="Segoe UI, Arial" font-size="13" fill="#92400e">(Hann/Hamming...)</text>
+
+  <rect x="590" y="60" width="110" height="60" rx="8" fill="#f3e8ff" stroke="#b48add"/>
+  <text x="614" y="95" font-family="Segoe UI, Arial" font-size="13" fill="#6b21a8">irFFT</text>
+
+  <rect x="730" y="60" width="110" height="60" rx="8" fill="#ffe9ec" stroke="#df9aa5"/>
+  <text x="744" y="88" font-family="Segoe UI, Arial" font-size="13" fill="#9f1239">rho(t)</text>
+  <text x="744" y="106" font-family="Segoe UI, Arial" font-size="13" fill="#9f1239">to Z(t)</text>
+
+  <line x1="180" y1="90" x2="210" y2="90" stroke="#64748b" stroke-width="2"/>
+  <line x1="380" y1="90" x2="410" y2="90" stroke="#64748b" stroke-width="2"/>
+  <line x1="560" y1="90" x2="590" y2="90" stroke="#64748b" stroke-width="2"/>
+  <line x1="700" y1="90" x2="730" y2="90" stroke="#64748b" stroke-width="2"/>
+
+  <text x="34" y="170" font-family="Consolas, Courier New, monospace" font-size="13" fill="#0f172a">rho_step(t) = cumsum(irfft(window * Sii(f)))</text>
+  <text x="34" y="194" font-family="Consolas, Courier New, monospace" font-size="13" fill="#0f172a">Z(t) = Z0 * (1 + rho_step) / (1 - rho_step)</text>
+</svg>

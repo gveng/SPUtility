@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="240" viewBox="0 0 860 240">
+  <rect x="0" y="0" width="860" height="240" fill="#ffffff"/>
+  <text x="24" y="30" font-family="Segoe UI, Arial" font-size="16" fill="#1f3c88">Equivalent network solve and export</text>
+
+  <rect x="35" y="58" width="190" height="70" rx="8" fill="#e8f1ff" stroke="#96b7e6"/>
+  <text x="56" y="88" font-family="Segoe UI, Arial" font-size="13" fill="#1e3a8a">Assemble circuit graph</text>
+  <text x="56" y="106" font-family="Segoe UI, Arial" font-size="13" fill="#1e3a8a">(blocks + ports + links)</text>
+
+  <rect x="255" y="58" width="220" height="70" rx="8" fill="#eefdf3" stroke="#7ccf98"/>
+  <text x="280" y="88" font-family="Segoe UI, Arial" font-size="13" fill="#166534">Per-frequency nodal solve</text>
+  <text x="280" y="106" font-family="Segoe UI, Arial" font-size="13" fill="#166534">Y * V = I</text>
+
+  <rect x="505" y="58" width="160" height="70" rx="8" fill="#fff7e7" stroke="#f2bb5d"/>
+  <text x="536" y="88" font-family="Segoe UI, Arial" font-size="13" fill="#92400e">Build S-matrix</text>
+  <text x="536" y="106" font-family="Segoe UI, Arial" font-size="13" fill="#92400e">at each f</text>
+
+  <rect x="695" y="58" width="130" height="70" rx="8" fill="#ffe9ec" stroke="#df9aa5"/>
+  <text x="714" y="88" font-family="Segoe UI, Arial" font-size="13" fill="#9f1239">Write</text>
+  <text x="714" y="106" font-family="Segoe UI, Arial" font-size="13" fill="#9f1239">Touchstone</text>
+
+  <line x1="225" y1="92" x2="255" y2="92" stroke="#64748b" stroke-width="2"/>
+  <line x1="475" y1="92" x2="505" y2="92" stroke="#64748b" stroke-width="2"/>
+  <line x1="665" y1="92" x2="695" y2="92" stroke="#64748b" stroke-width="2"/>
+
+  <text x="34" y="176" font-family="Consolas, Courier New, monospace" font-size="13" fill="#0f172a">S = (I - Z0*Y) * inv(I + Z0*Y)</text>
+</svg>

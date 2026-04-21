@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="320" viewBox="0 0 860 320">
+  <rect x="0" y="0" width="860" height="320" fill="#ffffff"/>
+  <rect x="30" y="30" width="800" height="260" fill="#f8fbff" stroke="#c7d2e2"/>
+  <line x1="70" y1="160" x2="790" y2="160" stroke="#9aa7bd" stroke-width="1"/>
+  <line x1="430" y1="40" x2="430" y2="280" stroke="#d97706" stroke-width="2" stroke-dasharray="6 6"/>
+  <path d="M 80 160 C 190 40, 300 40, 430 160 C 560 280, 670 280, 780 160" fill="none" stroke="#0b67c2" stroke-width="3"/>
+  <path d="M 80 160 C 190 280, 300 280, 430 160 C 560 40, 670 40, 780 160" fill="none" stroke="#0b67c2" stroke-width="3"/>
+  <line x1="430" y1="98" x2="430" y2="222" stroke="#dc2626" stroke-width="4"/>
+  <polygon points="430,92 424,104 436,104" fill="#dc2626"/>
+  <polygon points="430,228 424,216 436,216" fill="#dc2626"/>
+  <line x1="340" y1="250" x2="520" y2="250" stroke="#059669" stroke-width="4"/>
+  <polygon points="334,250 346,244 346,256" fill="#059669"/>
+  <polygon points="526,250 514,244 514,256" fill="#059669"/>
+  <text x="438" y="165" font-family="Segoe UI, Arial" font-size="14" fill="#92400e">Decision center</text>
+  <text x="438" y="120" font-family="Segoe UI, Arial" font-size="14" fill="#dc2626">Eye height</text>
+  <text x="365" y="272" font-family="Segoe UI, Arial" font-size="14" fill="#047857">Eye width</text>
+  <text x="40" y="22" font-family="Segoe UI, Arial" font-size="15" fill="#1f3c88">Eye measurement geometry</text>
+</svg>

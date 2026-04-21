@@ -6,22 +6,27 @@
   <style>
     body {
       font-family: Segoe UI, Arial, sans-serif;
-      line-height: 1.5;
+      line-height: 1.55;
       margin: 24px auto;
-      max-width: 900px;
+      max-width: 980px;
       background: #ffffff;
-      color: #000000;
+      color: #0f172a;
     }
-    h1, h2 {
-      color: #0057b8;
+    h1, h2, h3 {
+      color: #0b4ea8;
+    }
+    h2 {
+      border-bottom: 1px solid #d8e3f3;
+      padding-bottom: 4px;
+      margin-top: 30px;
     }
     code {
       background: #f3f5f7;
       padding: 1px 4px;
       border-radius: 3px;
     }
-    ul {
-      padding-left: 20px;
+    ul, ol {
+      padding-left: 22px;
     }
     table {
       border-collapse: collapse;
@@ -39,218 +44,167 @@
       background: #eaf2ff;
       color: #003b84;
     }
+    .formula {
+      font-family: Consolas, "Courier New", monospace;
+      background: #f8fafc;
+      border: 1px solid #d6e0ef;
+      padding: 10px 12px;
+      margin: 8px 0;
+      border-radius: 6px;
+      white-space: pre-wrap;
+    }
+    .figure {
+      margin: 12px 0 18px;
+      padding: 10px;
+      border: 1px solid #d6e0ef;
+      border-radius: 8px;
+      background: #fcfdff;
+    }
+    .figure img {
+      width: 100%;
+      height: auto;
+    }
+    .caption {
+      margin-top: 6px;
+      font-size: 0.9rem;
+      color: #334155;
+    }
   </style>
 </head>
 <body>
   <h1>SPUtility User Guide</h1>
   <p>
-    SPUtility is a desktop viewer for Touchstone S-parameter files. It lets you load one or
-    more files, inspect tables, compare traces in independent plot windows, and save a full
-    working session as a project.
+    SPUtility is a desktop viewer and analysis tool for Touchstone S-parameter files.
+    This guide explains both <b>how to use each section</b> and <b>how calculations and measurements are performed</b>.
   </p>
-
-  <h2>What You Can Do</h2>
-  <ul>
-    <li>Open Touchstone files such as <code>.s1p</code>, <code>.s2p</code>, <code>.s4p</code>, and <code>.ts</code>.</li>
-    <li>Open raw data tables and magnitude tables for each loaded file.</li>
-    <li>Create multiple independent graph windows to compare different trace selections.</li>
-    <li>Select which S-parameters are plotted for each file.</li>
-    <li>Edit the legend label used for each loaded file in every plot window.</li>
-    <li>Change plot settings for linear or logarithmic axes and manual or automatic ranges.</li>
-    <li>Save and reopen projects with loaded files, graph selections, labels, and window sizes.</li>
-    <li>Arrange internal windows using tile, cascade, minimize, restore, or resize-all commands.</li>
-  </ul>
 
   <h2>Main Workflow</h2>
   <ol>
     <li>Use <b>File &gt; Open File</b> to load one or more Touchstone files.</li>
-    <li>Use the <b>Tables</b> menu to inspect raw or magnitude data for each loaded file.</li>
-    <li>Use <b>Charts &gt; Open plot window</b> to create a graph window.</li>
-    <li>In each graph window, enable the desired S-parameters using the checkboxes.</li>
-    <li>Edit the <b>Legend label</b> column if you want custom names in the graph legend.</li>
-    <li>Use <b>Settings &gt; Plot settings</b> inside a graph window to configure axis behavior.</li>
-    <li>Use <b>File &gt; Save Project</b> to store your current workspace in a JSON project file.</li>
+    <li>Use <b>Tables</b> to inspect raw complex values and magnitude values.</li>
+    <li>Use <b>Charts &gt; Open plot window</b> for S-parameter overlays.</li>
+    <li>Use <b>TDR &gt; Open TDR window</b> for time-domain impedance profiles.</li>
+    <li>Use <b>Circuit &gt; Open circuit composer</b> for network assembly, export, and channel simulation.</li>
+    <li>Use <b>File &gt; Save Project</b> to store full workspace state.</li>
   </ol>
 
-  <h2>Plot Windows</h2>
-  <p>Each plot window is independent. This means you can:</p>
-  <ul>
-    <li>Open several graph windows at the same time.</li>
-    <li>Choose different trace combinations in each window.</li>
-    <li>Use different legend labels per plot window.</li>
-    <li>Resize windows independently or align them using the <b>View</b> menu commands.</li>
-  </ul>
-
-  <h2>TDR Calculation</h2>
+  <h2>File Menu and Recent History</h2>
   <p>
-    The TDR window computes a time-domain impedance profile from the selected reflection trace
-    (for example <code>S11</code>) of each loaded Touchstone file.
+    The <b>File</b> menu contains two independent recent histories:
   </p>
+  <ul>
+    <li><b>Recent Projects</b>: recently opened or saved project JSON files.</li>
+    <li><b>Recent S-Parameters</b>: recently opened Touchstone files (<code>.sNp</code>, <code>.ts</code>).</li>
+  </ul>
+  <p>
+    Missing files are removed automatically from history when selected.
+  </p>
+
+  <h2>S-Parameter Plot Windows</h2>
+  <h3>What is calculated</h3>
+  <ul>
+    <li>The plotted Y values come from the precomputed magnitude table in dB.</li>
+    <li>Each selected trace is drawn versus frequency.</li>
+    <li>Optional log axes filter out non-valid points for the chosen scale.</li>
+  </ul>
+  <h3>How measurements are detected</h3>
+  <ul>
+    <li>Plot windows do not estimate extra derived SI metrics by default.</li>
+    <li>They report the selected traces exactly as present in loaded data tables.</li>
+  </ul>
+  <div class="formula">Magnitude in dB: 20 * log10(|Sij|)</div>
+
+  <h2>TDR Window</h2>
+  <h3>What is calculated</h3>
   <ol>
-    <li>The selected complex trace is extracted versus frequency.</li>
-    <li>Frequency samples are sorted and resampled on a uniform frequency grid.</li>
-    <li>A user-selected frequency-domain window is applied (for example Hann, Hamming, Blackman, Flattop, or None) to control ringing and resolution tradeoff.</li>
-    <li>An inverse real FFT (SciPy) is used to obtain the impulse response in time domain.</li>
-    <li>The impulse response is cumulatively integrated to obtain a step reflection profile.</li>
-    <li>Reflection is converted to impedance using <code>Z(t) = Z0 * (1 + rho) / (1 - rho)</code>,
-        with <code>Z0 = 50 Ohm</code>.</li>
-    <li>The result is plotted as impedance versus time.</li>
+    <li>Select a reflection trace <code>Sii(f)</code> (for example <code>S11</code>).</li>
+    <li>Sort frequencies and resample only if spacing is non-uniform.</li>
+    <li>Apply selected high-frequency taper window.</li>
+    <li>Compute impulse response by inverse real FFT.</li>
+    <li>Integrate impulse to obtain step reflection <code>rho_step(t)</code>.</li>
+    <li>Convert reflection to impedance <code>Z(t)</code>.</li>
+    <li>Apply optional display processing: rise-time smoothing, front shift, total-time clipping.</li>
   </ol>
-  <p>
-    In the TDR control bar, you can adjust:
-  </p>
+  <div class="formula">rho_step(t) = cumsum(irfft(window * Sii(f)))
+Z(t) = Z0 * (1 + rho_step(t)) / (1 - rho_step(t))</div>
+  <div class="figure">
+    <img src="images/tdr_pipeline.svg" alt="TDR processing pipeline">
+    <div class="caption">TDR conversion chain used in SPUtility.</div>
+  </div>
+  <h3>How measurements are detected</h3>
   <ul>
-    <li><b>Rise time</b>: applies smoothing to emulate finite edge speed.</li>
-    <li><b>Zero before front</b>: defines a flat 50 Ohm segment before the reflected step appears.</li>
-    <li><b>Total time</b>: limits the displayed time window.</li>
-    <li><b>Window</b>: lets you choose the frequency-domain windowing function used before the inverse FFT.</li>
+    <li>The tool computes the full impedance-vs-time waveform.</li>
+    <li>Displayed values are direct waveform samples after selected processing settings.</li>
   </ul>
-  <p><b>Windowing quick guide</b></p>
-  <table>
-    <tr>
-      <th>Window</th>
-      <th>When to use it</th>
-      <th>Tradeoff</th>
-    </tr>
-    <tr>
-      <td>Hann</td>
-      <td>Good default for most traces.</td>
-      <td>Balanced ringing reduction and edge sharpness.</td>
-    </tr>
-    <tr>
-      <td>Hamming</td>
-      <td>When you want slightly stronger sidelobe control than Hann.</td>
-      <td>Smoother response with a small loss of time resolution.</td>
-    </tr>
-    <tr>
-      <td>Blackman</td>
-      <td>When ringing suppression is more important than edge detail.</td>
-      <td>Very good sidelobe suppression, softer transitions.</td>
-    </tr>
-    <tr>
-      <td>Flattop</td>
-      <td>When amplitude flatness is prioritized.</td>
-      <td>Lowest apparent ripple but widest main lobe (poorer resolution).</td>
-    </tr>
-    <tr>
-      <td>None</td>
-      <td>For raw response inspection or maximum edge sharpness.</td>
-      <td>Highest ringing risk and more spectral leakage artifacts.</td>
-    </tr>
-  </table>
+
+  <h2>Circuit Editor and Equivalent Export</h2>
+  <h3>What is calculated</h3>
+  <ul>
+    <li>The editor builds a network graph from blocks, ports, and connections.</li>
+    <li>For each sweep frequency, an equivalent network solve is executed.</li>
+    <li>The exported S-matrix is written to Touchstone in the selected format and unit.</li>
+  </ul>
+  <div class="formula">Per-frequency solve: Y * V = I
+Typical conversion form: S = (I - Z0*Y) * inv(I + Z0*Y)</div>
+  <div class="figure">
+    <img src="images/network_export.svg" alt="Equivalent network export">
+    <div class="caption">From circuit graph to exported Touchstone model.</div>
+  </div>
+  <h3>How measurements are detected</h3>
+  <ul>
+    <li>Validation checks topology consistency and sweep constraints before export.</li>
+    <li>External ports are detected from dedicated port blocks and rebuilt automatically.</li>
+  </ul>
+
+  <h2>Channel Simulation and Eye Diagram</h2>
+  <h3>What is calculated</h3>
+  <ol>
+    <li>Generate transmitted waveform from driver settings (levels, bitrate, encoding, PRBS, rise/fall).</li>
+    <li>Run channel response through the assembled network.</li>
+    <li>Fold waveform into UI-length segments and align decision phase.</li>
+    <li>Optionally apply statistical perturbation:
+      Gaussian voltage noise and random timing jitter.</li>
+    <li>Render eye with selected mode (Heatmap / Lines / Heatmap + Lines) and quality preset (Fast / Balanced / HighRes).</li>
+  </ol>
+  <div class="formula">UI = 1 / Bitrate
+Jitter (samples) = jitter_rms_ps * 1e-12 / dt</div>
+  <h3>How measurements are detected</h3>
+  <ul>
+    <li><b>Level1 / Level0</b>: medians of upper/lower amplitude clusters around the decision center.</li>
+    <li><b>Height</b>: vertical opening at decision center using percentile envelopes.</li>
+    <li><b>Width</b>: contiguous open interval around center, reported in ps.</li>
+    <li>Decision center is automatically recentered near the maximum opening profile.</li>
+  </ul>
+  <div class="formula">Height = p5(upper) - p95(lower) at decision center
+Width_UI = open_samples / samples_per_UI
+Width_ps = Width_UI * UI * 1e12</div>
+  <div class="figure">
+    <img src="images/eye_measurements.svg" alt="Eye measurements">
+    <div class="caption">Eye measurement geometry used by the summary panel.</div>
+  </div>
 
   <h2>Project Files</h2>
-  <p>A saved project stores the working session, including:</p>
+  <p>A saved project stores:</p>
   <ul>
-    <li>The list of loaded file paths.</li>
-    <li>All open graph windows.</li>
-    <li>All open TDR windows.</li>
-    <li>All open circuit editor windows.</li>
-    <li>Selected parameters in each graph window.</li>
-    <li>Legend labels for each file.</li>
-    <li>Plot settings and graph window sizes.</li>
-    <li>TDR file visibility/trace selections, legend labels, window choice, rise time, zero-before-front duration, total time, and TDR window sizes.</li>
+    <li>Loaded file paths.</li>
+    <li>Plot, TDR, and circuit windows with their settings and sizes.</li>
+    <li>Selected traces, legend labels, and per-window configuration.</li>
   </ul>
-
-  <h2>Circuit Editor</h2>
-  <p>
-    The circuit editor is a graphical workspace for building RF interconnections from the loaded
-    Touchstone files and from the editor-specific blocks available in the left panel.
-  </p>
-  <ul>
-    <li>The left panel contains draggable blocks. It includes loaded Touchstone files plus editor blocks: GND, Port To Ground, Differential Port, Resistor, Inductor, and Capacitor.</li>
-    <li>The center panel is the circuit canvas where you place blocks and create interconnections between ports.</li>
-    <li>The right panel contains editor settings, including frequency sweep controls, impedance settings for supported blocks, transform controls, and export actions.</li>
-    <li>All three panels are resizable by dragging the splitter bars.</li>
-    <li>You can create an interconnection by clicking one port and then clicking another port.</li>
-    <li>A single port can be connected to multiple different elements. Exact duplicate links between the same two ports are blocked.</li>
-    <li>You can remove an interconnection by selecting the line and pressing <b>Delete</b>, or by right-clicking the line and choosing <b>Delete connection</b>.</li>
-    <li>You can transform elements by selecting a block and using rotation/mirror controls on the right, or by right-clicking a block (or its port) and using the context menu.</li>
-    <li>Supported special blocks keep their configurable impedance visible in the schematic.</li>
-  </ul>
-  <p><b>External ports are automatic</b></p>
-  <ul>
-    <li>There is no manual external-port assignment panel.</li>
-    <li>Each <b>Port To Ground</b> block creates one exported external port.</li>
-    <li>Each <b>Differential Port</b> block creates two exported external ports (+ and - sides).</li>
-    <li>External port numbering is rebuilt automatically when blocks are added or removed.</li>
-  </ul>
-  <p><b>Sweep and export</b></p>
-  <ul>
-    <li>Sweep controls are <b>Fmin</b>, <b>Fmax</b>, <b>Step</b>, and display unit (<b>Hz</b>, <b>KHz</b>, <b>MHz</b>, <b>GHz</b>).</li>
-    <li>Export computes the equivalent network and saves a Touchstone file with extension <code>.sNp</code> based on the exported port count.</li>
-    <li>During export, you can choose output data format: <b>RI</b> (Real/Imag), <b>MA</b> (Magnitude/Angle), or <b>DB</b> (dB/Angle).</li>
-    <li>During export, you can choose output frequency unit: <b>Hz</b>, <b>KHz</b>, <b>MHz</b>, or <b>GHz</b>.</li>
-  </ul>
-  <p><b>Validation rules</b></p>
-  <ul>
-    <li>Export is enabled only when at least one external port exists and the circuit is valid.</li>
-    <li>Sweep constraints: <code>Fmin &gt; 0</code>, <code>Step &gt; 0</code>, and <code>Fmax &gt;= Fmin</code>.</li>
-  </ul>
-  <p><b>Common warnings</b></p>
-  <ul>
-    <li>Differential Port blocks are exported as two single-ended ports, not as one mixed-mode port.</li>
-    <li>If the sweep step does not land exactly on Fmax, the exporter still includes Fmax as the final point.</li>
-  </ul>
-  <p>
-    The circuit editor state is saved inside the project file together with the other open windows.
-  </p>
 
   <h2>View Menu</h2>
-    <h2>Channel Simulation and Eye Diagram</h2>
-    <p>
-      The circuit editor supports a <b>Channel Sim</b> mode that runs a time-domain signal
-      integrity simulation through the assembled S-parameter network.
-      Switch to Channel Sim mode using the <b>Simulation mode</b> drop-down in the right panel.
-    </p>
-    <p><b>Driver Settings</b></p>
-    <ul>
-      <li><b>V high / V low</b>: output voltage levels of the transmitter (default ±400 mV).</li>
-      <li><b>Rise / Fall time</b>: edge transition time of the driver (default 25 ps).</li>
-      <li><b>Bitrate</b>: transmission rate in Gbps.</li>
-      <li><b>PRBS pattern</b>: pseudo-random bit sequence used as the test pattern (e.g. PRBS-8, PRBS-31).</li>
-      <li><b>Encoding</b>: line code applied to the bit stream (None, 8b10b, 64b66b, 128b130b, PAM4).</li>
-      <li><b>Num bits</b>: total number of bits to simulate.</li>
-      <li><b>Output port</b>: the port instance used as the channel output.</li>
-      <li><b>Eye span</b>: how many UI to display in each eye diagram window (1, 2, or 3 UI).</li>
-      <li><b>Eye render</b>: rendering mode — <i>Heatmap</i>, <i>Lines</i>, or <i>Heatmap + Lines</i>.</li>
-    </ul>
-    <p><b>Simulazione Statistica</b></p>
-    <p>
-      When enabled, each trace of the eye diagram is perturbed with independent random noise and jitter
-      before rendering. This produces a statistically spread eye that approximates the effect of
-      Gaussian random noise and random jitter sources on the real channel.
-    </p>
-    <ul>
-      <li><b>Abilita simulazione statistica</b>: enables the statistical perturbation. Off by default.</li>
-      <li><b>Noise RMS</b>: root-mean-square amplitude of the Gaussian voltage noise added to each sample (mV).</li>
-      <li><b>Jitter RMS</b>: root-mean-square temporal uncertainty applied to each trace start point (ps).</li>
-    </ul>
-    <p><b>Eye Diagram window</b></p>
-    <ul>
-      <li>Background is white; the heatmap uses a <b>white → blue → yellow</b> color scale
-          (white = zero hits, blue = low density, yellow = peak density).</li>
-      <li>The <b>Diagnostics</b> bar shows detected signal levels, phase score, rendering mode, and trace count.</li>
-      <li>Vertical dashed markers indicate the UI boundary positions.</li>
-      <li>Phase is automatically aligned to maximize the eye opening using a multi-level scoring algorithm
-          that also supports PAM4 signals.</li>
-    </ul>
-
-    <h2>View Menu</h2>
   <ul>
-    <li><b>Tile windows</b>: arranges sub-windows in a tiled layout.</li>
-    <li><b>Cascade windows</b>: stacks sub-windows in cascade order.</li>
-    <li><b>Minimize all</b>: minimizes every open sub-window.</li>
-    <li><b>Restore all</b>: restores all minimized sub-windows.</li>
-    <li><b>Resize all graph with last graph window</b>: applies the current graph layout to the other graph windows.</li>
-    <li><b>Close all</b>: closes every open sub-window.</li>
+    <li><b>Tile windows</b>: arrange sub-windows in a tiled layout.</li>
+    <li><b>Cascade windows</b>: stack sub-windows in cascade order.</li>
+    <li><b>Minimize all</b>: minimize every open sub-window.</li>
+    <li><b>Restore all</b>: restore all minimized sub-windows.</li>
+    <li><b>Resize all graph with last graph window</b>: copy layout from latest graph window.</li>
+    <li><b>Close all</b>: close every open sub-window.</li>
   </ul>
 
   <h2>Notes</h2>
   <ul>
-    <li>If a saved project references files that no longer exist, the project opens with warnings.</li>
-    <li>Graph windows reflect only the traces you selected in that specific window.</li>
-    <li>You are prompted before closing the application if the current project has unsaved changes.</li>
+    <li>If a saved project references missing files, loading proceeds with warnings.</li>
+    <li>You are prompted before closing when the project has unsaved changes.</li>
   </ul>
 </body>
 </html>

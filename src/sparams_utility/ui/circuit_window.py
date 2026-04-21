@@ -50,8 +50,10 @@ from sparams_utility.models.circuit import (
 from sparams_utility.models.state import AppState
 from sparams_utility.ui.eye_diagram_window import (
     DEFAULT_EYE_SPAN_UI,
+    DEFAULT_QUALITY_PRESET,
     DEFAULT_RENDER_MODE,
     EYE_SPAN_CHOICES,
+    QUALITY_PRESET_CHOICES,
     RENDER_MODE_CHOICES,
     EyeDiagramWindow,
 )
@@ -2151,6 +2153,15 @@ class CircuitWindow(QMainWindow):
         self._drv_eye_render_mode.currentIndexChanged.connect(self._emit_project_modified)
         drv_layout.addRow("Eye render", self._drv_eye_render_mode)
 
+        self._drv_eye_quality_preset = QComboBox()
+        for preset in QUALITY_PRESET_CHOICES:
+            self._drv_eye_quality_preset.addItem(preset, preset)
+        default_quality_index = self._drv_eye_quality_preset.findData(DEFAULT_QUALITY_PRESET)
+        if default_quality_index >= 0:
+            self._drv_eye_quality_preset.setCurrentIndex(default_quality_index)
+        self._drv_eye_quality_preset.currentIndexChanged.connect(self._emit_project_modified)
+        drv_layout.addRow("Eye quality", self._drv_eye_quality_preset)
+
         self._stat_group = QGroupBox("Simulazione Statistica")
         self._stat_group.setVisible(False)
         stat_layout = QFormLayout(self._stat_group)
@@ -2912,12 +2923,14 @@ class CircuitWindow(QMainWindow):
             parent=self,
             initial_span_ui=self._selected_eye_span_ui(),
             initial_render_mode=self._selected_eye_render_mode(),
+            initial_quality_preset=self._selected_eye_quality_preset(),
             statistical_enabled=self._stat_enabled.isChecked(),
             noise_rms_mv=self._stat_noise.value(),
             jitter_rms_ps=self._stat_jitter.value(),
         )
         win.span_changed.connect(self._on_eye_span_window_changed)
         win.render_mode_changed.connect(self._on_eye_render_mode_window_changed)
+        win.quality_preset_changed.connect(self._on_eye_quality_preset_window_changed)
         win.setAttribute(Qt.WA_DeleteOnClose)
         win.show()
         self._eye_windows.append(win)
@@ -2927,15 +2940,16 @@ class CircuitWindow(QMainWindow):
         def _fmv(v: float) -> str:
             import math as _math
             return "n/a" if not _math.isfinite(v) else f"{v * 1000:.2f} mV"
-        def _fui(v: float) -> str:
+        def _fps(v: float) -> str:
             import math as _math
-            return "n/a" if not _math.isfinite(v) else f"{v:.3f} UI"
+            return "n/a" if not _math.isfinite(v) else f"{v:.2f} ps"
+        width_ps = s.get("width_ps", float("nan"))
         self._status_label.setText(
             f"Channel sim done │ "
             f"Level1: {_fmv(s.get('level1', float('nan')))}  "
             f"Level0: {_fmv(s.get('level0', float('nan')))}  "
             f"Height: {_fmv(s.get('height', float('nan')))}  "
-            f"Width: {_fui(s.get('width', float('nan')))}"
+            f"Width: {_fps(width_ps)}"
         )
 
     def export_project_state(self) -> dict:
@@ -2945,6 +2959,7 @@ class CircuitWindow(QMainWindow):
             "simulation_mode": self._sim_mode.currentText(),
             "eye_span_ui": self._selected_eye_span_ui(),
             "eye_render_mode": self._selected_eye_render_mode(),
+            "eye_quality_preset": self._selected_eye_quality_preset(),
             "stat_enabled": self._stat_enabled.isChecked(),
             "stat_noise_mv": self._stat_noise.value(),
             "stat_jitter_ps": self._stat_jitter.value(),
@@ -3034,6 +3049,13 @@ class CircuitWindow(QMainWindow):
             self._drv_eye_render_mode.blockSignals(True)
             self._drv_eye_render_mode.setCurrentIndex(eye_render_index)
             self._drv_eye_render_mode.blockSignals(False)
+
+        eye_quality_preset = str(state.get("eye_quality_preset", DEFAULT_QUALITY_PRESET))
+        eye_quality_index = self._drv_eye_quality_preset.findData(eye_quality_preset)
+        if eye_quality_index >= 0:
+            self._drv_eye_quality_preset.blockSignals(True)
+            self._drv_eye_quality_preset.setCurrentIndex(eye_quality_index)
+            self._drv_eye_quality_preset.blockSignals(False)
 
         self._scene.rebuild_export_state(self._document)
         self._refresh_validation_state()
@@ -3175,6 +3197,10 @@ class CircuitWindow(QMainWindow):
         render_mode = self._drv_eye_render_mode.currentData()
         return str(render_mode) if render_mode is not None else DEFAULT_RENDER_MODE
 
+    def _selected_eye_quality_preset(self) -> str:
+        preset = self._drv_eye_quality_preset.currentData()
+        return str(preset) if preset is not None else DEFAULT_QUALITY_PRESET
+
     def _on_eye_span_window_changed(self, span_ui: int) -> None:
         eye_span_index = self._drv_eye_span.findData(int(span_ui))
         if eye_span_index < 0 or eye_span_index == self._drv_eye_span.currentIndex():
@@ -3186,3 +3212,9 @@ class CircuitWindow(QMainWindow):
         if eye_render_index < 0 or eye_render_index == self._drv_eye_render_mode.currentIndex():
             return
         self._drv_eye_render_mode.setCurrentIndex(eye_render_index)
+
+    def _on_eye_quality_preset_window_changed(self, quality_preset: str) -> None:
+        quality_index = self._drv_eye_quality_preset.findData(str(quality_preset))
+        if quality_index < 0 or quality_index == self._drv_eye_quality_preset.currentIndex():
+            return
+        self._drv_eye_quality_preset.setCurrentIndex(quality_index)
