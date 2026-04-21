@@ -12,13 +12,14 @@ from sparams_utility.circuit_solver import (
     _analyze_passivity,
     _build_touchstone_cache,
     _fill_missing_frequency_points,
+    _generate_prbs,
     _interpolate_y_matrix,
     _s_to_y,
     _y_to_s,
     solve_circuit_network,
     to_touchstone_string_with_format,
 )
-from sparams_utility.models.circuit import CircuitDocument, CircuitPortRef
+from sparams_utility.models.circuit import CircuitDocument, CircuitPortRef, PRBS_CHOICES
 from sparams_utility.models.state import AppState
 from sparams_utility.touchstone_parser import (
     SParameterCell, TouchstoneFile, TouchstoneFormat, TouchstoneOptions,
@@ -27,6 +28,22 @@ from sparams_utility.touchstone_parser import (
 
 
 class CircuitSolverTests(unittest.TestCase):
+    def test_prbs_choices_include_8_and_12(self) -> None:
+        self.assertIn("PRBS-8", PRBS_CHOICES)
+        self.assertIn("PRBS-12", PRBS_CHOICES)
+
+    def test_generate_prbs_supports_8_and_12(self) -> None:
+        for pattern in ("PRBS-8", "PRBS-12"):
+            bits = _generate_prbs(pattern, 64)
+            self.assertEqual(bits.shape, (64,))
+            self.assertTrue(np.all((bits == 0) | (bits == 1)))
+            self.assertGreater(np.count_nonzero(bits), 0)
+            self.assertLess(np.count_nonzero(bits), 64)
+
+    def test_generate_prbs_rejects_unknown_pattern(self) -> None:
+        with self.assertRaises(ValueError):
+            _generate_prbs("PRBS-99", 16)
+
     def test_resistor_between_two_ports(self) -> None:
         doc = CircuitDocument()
         p1 = doc.add_instance(

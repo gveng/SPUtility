@@ -8,7 +8,7 @@ import numpy as np
 from scipy import linalg
 from scipy.interpolate import PchipInterpolator
 
-from sparams_utility.models.circuit import CircuitDocument, CircuitPortRef
+from sparams_utility.models.circuit import CircuitDocument, CircuitPortRef, DriverSpec
 from sparams_utility.models.state import AppState
 
 
@@ -157,7 +157,7 @@ def solve_circuit_network(document: CircuitDocument, state: AppState) -> Circuit
         y_global = np.zeros((node_count, node_count), dtype=np.complex128)
 
         for instance in document.instances:
-            if instance.block_kind in {"port_ground", "port_diff", "gnd"}:
+            if instance.block_kind in {"port_ground", "port_diff", "gnd", "driver_se", "driver_diff"}:
                 continue
             if instance.block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
                 _stamp_lumped(instance, frequency, uf, grounded_roots, root_to_node, y_global)
@@ -686,3 +686,197 @@ class _UnionFind:
         rb = self.find(b)
         if ra != rb:
             self.parent[rb] = ra
+
+
+# ---------------------------------------------------------------------------
+# Channel Simulation (eye diagram)
+# ---------------------------------------------------------------------------
+
+_PRBS_TAPS: Dict[str, List[List[int]]] = {
+    "PRBS-7": [[7, 6]],
+    "PRBS-8": [[8, 6, 5, 4]],
+    "PRBS-9": [[9, 5]],
+    "PRBS-10": [[10, 7]],
+    "PRBS-11": [[11, 9]],
+    "PRBS-12": [[12, 11, 10, 4]],
+    "PRBS-13": [[13, 12, 2, 1]],
+    "PRBS-15": [[15, 14]],
+    "PRBS-20": [[20, 17]],
+    "PRBS-23": [[23, 18]],
+    "PRBS-31": [[31, 28]],
+}
+
+
+def _generate_prbs(pattern: str, num_bits: int) -> np.ndarray:
+    taps_list = _PRBS_TAPS.get(pattern)
+    if taps_list is None:
+        raise ValueError(f"Unknown PRBS pattern: {pattern}")
+    taps = taps_list[0]
+    order = taps[0]
+    register = (1 << order) - 1
+    mask = (1 << order) - 1
+    bits = np.empty(num_bits, dtype=np.int8)
+    for i in range(num_bits):
+        bits[i] = register & 1
+        feedback = 0
+        for tap in taps:
+            feedback ^= (register >> (tap - 1)) & 1
+        register = ((register >> 1) | (feedback << (order - 1))) & mask
+    return bits
+
+
+def _apply_encoding(bits: np.ndarray, encoding: str) -> np.ndarray:
+    if encoding == "None" or encoding == "":
+        return bits
+    if encoding == "8b10b":
+        overhead = int(len(bits) * 0.25)
+        extra_bits = np.random.default_rng(42).integers(0, 2, size=overhead, dtype=np.int8)
+        return np.concatenate([bits, extra_bits])[:len(bits)]
+    if encoding == "64b66b":
+        overhead = int(len(bits) * (2.0 / 64.0))
+        extra_bits = np.random.default_rng(42).integers(0, 2, size=overhead, dtype=np.int8)
+        return np.concatenate([bits, extra_bits])[:len(bits)]
+    if encoding == "128b130b":
+        overhead = int(len(bits) * (2.0 / 128.0))
+        extra_bits = np.random.default_rng(42).integers(0, 2, size=overhead, dtype=np.int8)
+        return np.concatenate([bits, extra_bits])[:len(bits)]
+    if encoding == "PAM4":
+        return bits
+    return bits
+
+
+@dataclass(frozen=True)
+class ChannelSimResult:
+    time_s: np.ndarray
+    waveform_v: np.ndarray
+    ui_s: float
+    driver_spec: DriverSpec
+    is_differential: bool
+
+
+def simulate_channel(
+    document: CircuitDocument,
+    state: AppState,
+    driver_instance_id: str,
+    output_port_instance_id: str,
+    output_port_number: int = 1,
+    progress_callback: callable | None = None,
+) -> ChannelSimResult:
+    driver_inst = document.get_instance(driver_instance_id)
+    if driver_inst is None or driver_inst.driver_spec is None:
+        raise ValueError("Driver instance not found or has no driver specification.")
+
+    spec = driver_inst.driver_spec
+    is_diff = driver_inst.block_kind == "driver_diff"
+
+    def _progress(pct: int, msg: str) -> None:
+        if progress_callback is not None:
+            progress_callback(pct, msg)
+
+    _progress(5, "Solving S-parameter network...")
+    result = solve_circuit_network(document, state)
+
+    driver_port_idx = _find_port_index(document, driver_instance_id, 1)
+    out_port_idx = _find_port_index(document, output_port_instance_id, output_port_number)
+    if driver_port_idx is None or out_port_idx is None:
+        raise ValueError("Could not map driver/output ports to solved S-parameter indices.")
+
+    s21_freq = result.s_matrices[:, out_port_idx, driver_port_idx]
+    freq_hz = result.frequencies_hz
+
+    _progress(25, "Generating PRBS pattern...")
+    bitrate_hz = spec.bitrate_gbps * 1e9
+    ui_s = 1.0 / bitrate_hz
+
+    raw_bits = _generate_prbs(spec.prbs_pattern, spec.num_bits)
+    encoded_bits = _apply_encoding(raw_bits, spec.encoding)
+    num_bits = len(encoded_bits)
+
+    samples_per_bit = max(32, int(np.ceil(1.0 / (ui_s * freq_hz[0]))) if freq_hz[0] > 0 else 64)
+    samples_per_bit = min(samples_per_bit, 128)
+    dt = ui_s / samples_per_bit
+    total_samples = num_bits * samples_per_bit
+
+    nfft = int(2 ** np.ceil(np.log2(total_samples)))
+    freq_fft = np.fft.rfftfreq(nfft, d=dt)
+
+    _progress(40, "Interpolating channel transfer function...")
+    h_freq = np.zeros(len(freq_fft), dtype=np.complex128)
+    for i, f in enumerate(freq_fft):
+        if f <= 0:
+            h_freq[i] = s21_freq[0] if len(s21_freq) > 0 else 0.0
+        elif f < freq_hz[0]:
+            h_freq[i] = s21_freq[0]
+        elif f > freq_hz[-1]:
+            h_freq[i] = s21_freq[-1] * np.exp(-1j * 2 * np.pi * (f - freq_hz[-1]) * 1e-12)
+            mag_rolloff = abs(s21_freq[-1]) * np.exp(-((f - freq_hz[-1]) / freq_hz[-1]) * 2.0)
+            h_freq[i] = mag_rolloff * np.exp(1j * np.angle(h_freq[i]))
+        else:
+            idx = np.searchsorted(freq_hz, f)
+            if idx <= 0:
+                h_freq[i] = s21_freq[0]
+            elif idx >= len(freq_hz):
+                h_freq[i] = s21_freq[-1]
+            else:
+                alpha = (f - freq_hz[idx - 1]) / (freq_hz[idx] - freq_hz[idx - 1])
+                h_freq[i] = (1 - alpha) * s21_freq[idx - 1] + alpha * s21_freq[idx]
+
+    if is_diff:
+        v_high = spec.voltage_high_v
+        v_low = spec.voltage_low_v
+    else:
+        v_high = spec.voltage_high_v
+        v_low = spec.voltage_low_v
+
+    _progress(55, "Building NRZ waveform...")
+    nrz_waveform = np.zeros(total_samples, dtype=float)
+    for i, bit in enumerate(encoded_bits[:num_bits]):
+        start = i * samples_per_bit
+        end = start + samples_per_bit
+        if end > total_samples:
+            break
+        nrz_waveform[start:end] = v_high if bit else v_low
+
+    rise_samples = max(1, int(spec.rise_time_s / dt))
+    fall_samples = max(1, int(spec.fall_time_s / dt))
+    kernel_len = max(rise_samples, fall_samples)
+    if kernel_len > 1:
+        kernel = np.ones(kernel_len, dtype=float) / kernel_len
+        nrz_waveform = np.convolve(nrz_waveform, kernel, mode='same')
+
+    _progress(70, "FFT convolution...")
+    padded = np.zeros(nfft, dtype=float)
+    padded[:total_samples] = nrz_waveform
+    input_fft = np.fft.rfft(padded)
+
+    output_fft = input_fft * h_freq
+    output_waveform = np.fft.irfft(output_fft, n=nfft)[:total_samples]
+
+    _progress(90, "Building result...")
+    time_s = np.arange(total_samples, dtype=float) * dt
+
+    return ChannelSimResult(
+        time_s=time_s,
+        waveform_v=output_waveform,
+        ui_s=ui_s,
+        driver_spec=spec,
+        is_differential=is_diff,
+    )
+
+
+def _find_port_index(document: CircuitDocument, instance_id: str, port_number: int) -> int | None:
+    se_assignments = sorted(document.external_ports, key=lambda item: item.external_port_number)
+    diff_assignments = sorted(document.differential_ports, key=lambda item: item.external_port_number)
+
+    idx = 0
+    for assignment in se_assignments:
+        if assignment.port_ref.instance_id == instance_id and assignment.port_ref.port_number == port_number:
+            return idx
+        idx += 1
+
+    for diff_assign in diff_assignments:
+        if diff_assign.port_ref_plus.instance_id == instance_id:
+            return idx
+        idx += 1
+
+    return None

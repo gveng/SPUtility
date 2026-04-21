@@ -7,6 +7,7 @@ from PySide6.QtCore import QMimeData, QPoint, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QGraphicsPolygonItem,
     QGraphicsScene,
     QGraphicsView,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -27,15 +29,31 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QInputDialog,
+    QProgressDialog,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
-from sparams_utility.circuit_solver import solve_circuit_network, to_touchstone_string_with_format
-from sparams_utility.models.circuit import CircuitDocument, CircuitPortRef, FrequencySweepSpec
+from sparams_utility.circuit_solver import solve_circuit_network, to_touchstone_string_with_format, simulate_channel, ChannelSimResult
+from sparams_utility.models.circuit import (
+    CircuitDocument,
+    CircuitPortRef,
+    DriverSpec,
+    FrequencySweepSpec,
+    PRBS_CHOICES,
+    ENCODING_CHOICES,
+)
 from sparams_utility.models.state import AppState
+from sparams_utility.ui.eye_diagram_window import (
+    DEFAULT_EYE_SPAN_UI,
+    DEFAULT_RENDER_MODE,
+    EYE_SPAN_CHOICES,
+    RENDER_MODE_CHOICES,
+    EyeDiagramWindow,
+)
 
 _MIME_BLOCK_DEF = "application/x-sparams-block-def"
 _BLOCK_WIDTH = 92.0
@@ -88,6 +106,10 @@ def _block_value_label(block_kind: str, value: float) -> str:
         return f"L = {value:g} H"
     if block_kind == "lumped_c":
         return f"C = {value:g} F"
+    if block_kind == "driver_se":
+        return "SE Driver"
+    if block_kind == "driver_diff":
+        return "Diff Driver"
     return f"{value:g} Ohm"
 
 
@@ -128,6 +150,8 @@ class BlockPreviewWidget(QWidget):
             self.setMinimumHeight(84)
         elif block_kind in {"port_diff", "port_ground", "gnd"}:
             self.setMinimumHeight(80)
+        elif block_kind in {"driver_se", "driver_diff"}:
+            self.setMinimumHeight(84)
         else:
             self.setMinimumHeight(max(64, 32 + max(nports, 2) * 10))
 
@@ -139,6 +163,8 @@ class BlockPreviewWidget(QWidget):
             return QSize(170, 84)
         if self._block_kind in {"port_diff", "port_ground", "gnd"}:
             return QSize(170, 80)
+        if self._block_kind in {"driver_se", "driver_diff"}:
+            return QSize(170, 84)
         return QSize(170, max(64, 32 + max(self._nports, 2) * 10))
 
     def paintEvent(self, event) -> None:  # noqa: N802, ANN001
@@ -160,6 +186,9 @@ class BlockPreviewWidget(QWidget):
         elif self._block_kind == "gnd":
             cx = self.rect().center().x()
             rect = QRectF(cx - _BLOCK_WIDTH / 2.0, 4.0, _BLOCK_WIDTH, 44.0)
+        elif self._block_kind in {"driver_se", "driver_diff"}:
+            cx = self.rect().center().x()
+            rect = QRectF(cx - _BLOCK_WIDTH / 2.0, 4.0, _BLOCK_WIDTH, 44.0)
         elif self._block_kind == "touchstone":
             cx = self.rect().center().x()
             body_h = max(44.0, (max(self._nports, 2) + 1) * 14.0)
@@ -167,7 +196,7 @@ class BlockPreviewWidget(QWidget):
         else:
             rect = self.rect().adjusted(18, 8, -18, -28)
         painter.setPen(QPen(QColor("#1e40af"), 1.6))
-        if self._block_kind not in {"lumped_r", "lumped_l", "lumped_c", "gnd", "port_diff", "port_ground", "touchstone"}:
+        if self._block_kind not in {"lumped_r", "lumped_l", "lumped_c", "gnd", "port_diff", "port_ground", "touchstone", "driver_se", "driver_diff"}:
             painter.setBrush(QBrush(QColor("#60a5fa")))
             painter.drawRoundedRect(rect, 6.0, 6.0)
 
@@ -202,6 +231,9 @@ class BlockPreviewWidget(QWidget):
             return
         if self._block_kind == "gnd":
             self._draw_gnd_symbol(painter, rect)
+            return
+        if self._block_kind in {"driver_se", "driver_diff"}:
+            self._draw_driver_symbol(painter, rect)
             return
         if self._block_kind == "lumped_l":
             self._draw_inductor_symbol(
@@ -463,6 +495,41 @@ class BlockPreviewWidget(QWidget):
         painter.drawLine(QPointF(cx - gap, y - plate_h), QPointF(cx - gap, y + plate_h))
         painter.drawLine(QPointF(cx + gap, y - plate_h), QPointF(cx + gap, y + plate_h))
 
+    def _draw_driver_symbol(self, painter: QPainter, rect: QRectF) -> None:
+        fg = QColor("#1e293b")
+        is_diff = self._block_kind == "driver_diff"
+        painter.setPen(QPen(fg, 2.0))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, 4.0, 4.0)
+        # Draw a small pulse waveform inside
+        cx = rect.center().x()
+        cy = rect.center().y()
+        w = rect.width() * 0.5
+        h = rect.height() * 0.35
+        painter.setPen(QPen(QColor("#2563eb"), 2.0))
+        pts = [
+            QPointF(cx - w / 2, cy + h / 2),
+            QPointF(cx - w / 4, cy + h / 2),
+            QPointF(cx - w / 4, cy - h / 2),
+            QPointF(cx, cy - h / 2),
+            QPointF(cx, cy + h / 2),
+            QPointF(cx + w / 4, cy + h / 2),
+            QPointF(cx + w / 4, cy - h / 2),
+            QPointF(cx + w / 2, cy - h / 2),
+        ]
+        for i in range(len(pts) - 1):
+            painter.drawLine(pts[i], pts[i + 1])
+        # Port markers
+        painter.setPen(QPen(fg, 1.6))
+        painter.setBrush(QBrush(QColor("#ffffff")))
+        if is_diff:
+            y1 = rect.top() + rect.height() / 3.0
+            y2 = rect.top() + 2 * rect.height() / 3.0
+            painter.drawPolygon(_hex_port_polygon(float(rect.right()), float(y1), _PORT_RADIUS))
+            painter.drawPolygon(_hex_port_polygon(float(rect.right()), float(y2), _PORT_RADIUS))
+        else:
+            painter.drawPolygon(_hex_port_polygon(float(rect.right()), float(cy), _PORT_RADIUS))
+
 
 def _build_palette_payload(
     *,
@@ -526,6 +593,20 @@ def _special_palette_blocks() -> list[dict]:
             "nports": 2,
             "source_file_id": "__special__:lumped_c",
             "impedance_ohm": 1e-12,
+        },
+        {
+            "block_kind": "driver_se",
+            "label": "SE Driver",
+            "nports": 1,
+            "source_file_id": "__special__:driver_se",
+            "impedance_ohm": 50.0,
+        },
+        {
+            "block_kind": "driver_diff",
+            "label": "Diff Driver",
+            "nports": 2,
+            "source_file_id": "__special__:driver_diff",
+            "impedance_ohm": 100.0,
         },
     ]
 
@@ -748,7 +829,7 @@ class CircuitBlockItem(QGraphicsObject):
         self._symbol_scale = max(0.5, min(3.0, float(getattr(instance, "symbol_scale", 1.0))))
         self._is_touchstone = instance.block_kind == "touchstone"
         self._block_width = _BLOCK_WIDTH * self._symbol_scale
-        if instance.block_kind in {"lumped_r", "lumped_l", "lumped_c", "port_diff", "port_ground", "gnd"}:
+        if instance.block_kind in {"lumped_r", "lumped_l", "lumped_c", "port_diff", "port_ground", "gnd", "driver_se", "driver_diff"}:
             self._body_height = 44.0 * self._symbol_scale
         elif instance.block_kind == "touchstone":
             self._body_height = max(44.0, (max(instance.nports, 2) + 1) * 14.0) * self._symbol_scale
@@ -786,6 +867,15 @@ class CircuitBlockItem(QGraphicsObject):
             self._port_items[2] = PortItem(self, 2, 0.0, 0.0)
             self._apply_port_layout()
             return
+        if self.instance.block_kind == "driver_se":
+            self._port_items[1] = PortItem(self, 1, 0.0, 0.0)
+            self._apply_port_layout()
+            return
+        if self.instance.block_kind == "driver_diff":
+            self._port_items[1] = PortItem(self, 1, 0.0, 0.0)
+            self._port_items[2] = PortItem(self, 2, 0.0, 0.0)
+            self._apply_port_layout()
+            return
         left_count = (self.instance.nports + 1) // 2
         right_count = self.instance.nports - left_count
         for idx in range(1, self.instance.nports + 1):
@@ -811,6 +901,12 @@ class CircuitBlockItem(QGraphicsObject):
             if port_number == 1:
                 return 0.0, self._body_height / 2.0
             return self._block_width, self._body_height / 2.0
+        if self.instance.block_kind == "driver_se":
+            return self._block_width, self._body_height / 2.0
+        if self.instance.block_kind == "driver_diff":
+            if port_number == 1:
+                return self._block_width, self._body_height / 3.0
+            return self._block_width, 2.0 * self._body_height / 3.0
 
         left_count = (self.instance.nports + 1) // 2
         right_count = self.instance.nports - left_count
@@ -854,7 +950,7 @@ class CircuitBlockItem(QGraphicsObject):
             painter.setPen(QPen(fg, 2.0))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect, 4.0, 4.0)
-        elif self.instance.block_kind not in {"lumped_r", "lumped_l", "lumped_c", "gnd", "port_diff", "port_ground"}:
+        elif self.instance.block_kind not in {"lumped_r", "lumped_l", "lumped_c", "gnd", "port_diff", "port_ground", "driver_se", "driver_diff"}:
             painter.setBrush(QBrush(fill))
             painter.drawRoundedRect(rect, 6.0, 6.0)
         
@@ -875,6 +971,8 @@ class CircuitBlockItem(QGraphicsObject):
             self._draw_inductor_symbol(painter, rect)
         elif self.instance.block_kind == "lumped_c":
             self._draw_capacitor_symbol(painter, rect)
+        elif self.instance.block_kind in {"driver_se", "driver_diff"}:
+            self._draw_driver_canvas(painter, rect)
         else:
             for port_number, port_item in self._port_items.items():
                 point = port_item.pos()
@@ -1065,6 +1163,30 @@ class CircuitBlockItem(QGraphicsObject):
         painter.drawLine(QPointF(cx - gap, y - plate_h), QPointF(cx - gap, y + plate_h))
         painter.drawLine(QPointF(cx + gap, y - plate_h), QPointF(cx + gap, y + plate_h))
 
+    def _draw_driver_canvas(self, painter: QPainter, rect: QRectF) -> None:
+        fg = QColor("#1e293b")
+        painter.setPen(QPen(fg, 2.0))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, 4.0, 4.0)
+        # Draw pulse waveform inside
+        cx = rect.center().x()
+        cy = rect.center().y()
+        w = rect.width() * 0.45
+        h = rect.height() * 0.3
+        painter.setPen(QPen(QColor("#2563eb"), 2.0))
+        pts = [
+            QPointF(cx - w / 2, cy + h / 2),
+            QPointF(cx - w / 4, cy + h / 2),
+            QPointF(cx - w / 4, cy - h / 2),
+            QPointF(cx, cy - h / 2),
+            QPointF(cx, cy + h / 2),
+            QPointF(cx + w / 4, cy + h / 2),
+            QPointF(cx + w / 4, cy - h / 2),
+            QPointF(cx + w / 2, cy - h / 2),
+        ]
+        for i in range(len(pts) - 1):
+            painter.drawLine(pts[i], pts[i + 1])
+
     def sync_from_instance(self, instance) -> None:
         self.instance = instance
         self._apply_visual_transform()
@@ -1192,6 +1314,22 @@ class CircuitScene(QGraphicsScene):
                 ]
                 block_item._port_label = ", ".join(f"Pd{n}" for n in nums) if nums else ""
                 block_item.update()
+            elif block_item.instance.block_kind == "driver_se":
+                nums = [
+                    str(ep.external_port_number)
+                    for ep in document.external_ports
+                    if ep.port_ref.instance_id == block_item.instance.instance_id
+                ]
+                block_item._port_label = ", ".join(f"D{n}" for n in nums) if nums else "DRV"
+                block_item.update()
+            elif block_item.instance.block_kind == "driver_diff":
+                nums = [
+                    str(dp.external_port_number)
+                    for dp in document.differential_ports
+                    if dp.port_ref_plus.instance_id == block_item.instance.instance_id
+                ]
+                block_item._port_label = ", ".join(f"Dd{n}" for n in nums) if nums else "DRV"
+                block_item.update()
 
 
 class CircuitWindow(QMainWindow):
@@ -1246,6 +1384,7 @@ class CircuitWindow(QMainWindow):
         self._impedance_editor.setSuffix(" Ohm")
         self._impedance_editor.valueChanged.connect(self._on_impedance_changed)
         self._impedance_editor.setEnabled(False)
+        self._impedance_label = QLabel("Value")
         self._symbol_size_editor = QDoubleSpinBox()
         self._symbol_size_editor.setRange(0.50, 3.00)
         self._symbol_size_editor.setSingleStep(0.10)
@@ -1259,6 +1398,124 @@ class CircuitWindow(QMainWindow):
 
         self._export_button = QPushButton("Export equivalent Touchstone")
         self._export_button.clicked.connect(self._export_equivalent_touchstone)
+
+        # --- Simulation mode selector ---
+        self._sim_mode = QComboBox()
+        self._sim_mode.addItems(["S-Parameters", "Channel Sim"])
+        self._sim_mode.currentTextChanged.connect(self._on_sim_mode_changed)
+
+        # --- Channel sim controls ---
+        self._channel_sim_button = QPushButton("Run Channel Simulation")
+        self._channel_sim_button.clicked.connect(self._run_channel_simulation)
+        self._channel_sim_button.setVisible(False)
+
+        self._driver_settings_group = QGroupBox("Driver Settings")
+        self._driver_settings_group.setVisible(False)
+        drv_layout = QFormLayout(self._driver_settings_group)
+
+        self._drv_v_high = QDoubleSpinBox()
+        self._drv_v_high.setRange(-10.0, 10.0)
+        self._drv_v_high.setDecimals(4)
+        self._drv_v_high.setValue(0.4)
+        self._drv_v_high.setSuffix(" V")
+        drv_layout.addRow("V high", self._drv_v_high)
+
+        self._drv_v_low = QDoubleSpinBox()
+        self._drv_v_low.setRange(-10.0, 10.0)
+        self._drv_v_low.setDecimals(4)
+        self._drv_v_low.setValue(-0.4)
+        self._drv_v_low.setSuffix(" V")
+        drv_layout.addRow("V low", self._drv_v_low)
+
+        self._drv_rise_time = QDoubleSpinBox()
+        self._drv_rise_time.setRange(0.1, 10000.0)
+        self._drv_rise_time.setDecimals(1)
+        self._drv_rise_time.setValue(25.0)
+        self._drv_rise_time.setSuffix(" ps")
+        drv_layout.addRow("Rise time", self._drv_rise_time)
+
+        self._drv_fall_time = QDoubleSpinBox()
+        self._drv_fall_time.setRange(0.1, 10000.0)
+        self._drv_fall_time.setDecimals(1)
+        self._drv_fall_time.setValue(25.0)
+        self._drv_fall_time.setSuffix(" ps")
+        drv_layout.addRow("Fall time", self._drv_fall_time)
+
+        self._drv_bitrate = QDoubleSpinBox()
+        self._drv_bitrate.setRange(0.001, 200.0)
+        self._drv_bitrate.setDecimals(3)
+        self._drv_bitrate.setValue(10.0)
+        self._drv_bitrate.setSuffix(" Gbps")
+        drv_layout.addRow("Bitrate", self._drv_bitrate)
+
+        self._drv_prbs = QComboBox()
+        self._drv_prbs.addItems(PRBS_CHOICES)
+        self._drv_prbs.setCurrentText("PRBS-8")
+        drv_layout.addRow("PRBS pattern", self._drv_prbs)
+
+        self._drv_encoding = QComboBox()
+        self._drv_encoding.addItems(ENCODING_CHOICES)
+        self._drv_encoding.setCurrentText("8b10b")
+        drv_layout.addRow("Encoding", self._drv_encoding)
+
+        self._drv_num_bits = QSpinBox()
+        self._drv_num_bits.setRange(128, 2**20)
+        self._drv_num_bits.setValue(2**13)
+        self._drv_num_bits.setSingleStep(1024)
+        drv_layout.addRow("Num bits", self._drv_num_bits)
+
+        self._drv_output_port_instance = QComboBox()
+        drv_layout.addRow("Output port", self._drv_output_port_instance)
+
+        self._drv_eye_span = QComboBox()
+        for span_ui in EYE_SPAN_CHOICES:
+            self._drv_eye_span.addItem(f"{span_ui} UI", span_ui)
+        default_eye_span_index = self._drv_eye_span.findData(DEFAULT_EYE_SPAN_UI)
+        if default_eye_span_index >= 0:
+            self._drv_eye_span.setCurrentIndex(default_eye_span_index)
+        self._drv_eye_span.currentIndexChanged.connect(self._emit_project_modified)
+        drv_layout.addRow("Eye span", self._drv_eye_span)
+
+        self._drv_eye_render_mode = QComboBox()
+        for mode in RENDER_MODE_CHOICES:
+            self._drv_eye_render_mode.addItem(mode, mode)
+        default_render_mode_index = self._drv_eye_render_mode.findData(DEFAULT_RENDER_MODE)
+        if default_render_mode_index >= 0:
+            self._drv_eye_render_mode.setCurrentIndex(default_render_mode_index)
+        self._drv_eye_render_mode.currentIndexChanged.connect(self._emit_project_modified)
+        drv_layout.addRow("Eye render", self._drv_eye_render_mode)
+
+        self._stat_group = QGroupBox("Simulazione Statistica")
+        self._stat_group.setVisible(False)
+        stat_layout = QFormLayout(self._stat_group)
+
+        self._stat_enabled = QCheckBox("Abilita simulazione statistica")
+        self._stat_enabled.setChecked(False)
+        self._stat_enabled.toggled.connect(self._on_stat_enabled_changed)
+        self._stat_enabled.toggled.connect(self._emit_project_modified)
+        stat_layout.addRow(self._stat_enabled)
+
+        self._stat_noise = QDoubleSpinBox()
+        self._stat_noise.setRange(0.0, 500.0)
+        self._stat_noise.setSingleStep(1.0)
+        self._stat_noise.setDecimals(1)
+        self._stat_noise.setValue(0.0)
+        self._stat_noise.setSuffix(" mV")
+        self._stat_noise.setEnabled(False)
+        self._stat_noise.valueChanged.connect(self._emit_project_modified)
+        stat_layout.addRow("Noise RMS", self._stat_noise)
+
+        self._stat_jitter = QDoubleSpinBox()
+        self._stat_jitter.setRange(0.0, 100.0)
+        self._stat_jitter.setSingleStep(0.5)
+        self._stat_jitter.setDecimals(1)
+        self._stat_jitter.setValue(0.0)
+        self._stat_jitter.setSuffix(" ps")
+        self._stat_jitter.setEnabled(False)
+        self._stat_jitter.valueChanged.connect(self._emit_project_modified)
+        stat_layout.addRow("Jitter RMS", self._stat_jitter)
+
+        self._eye_windows: list = []
 
         left_panel = QFrame()
         left_panel.setFrameShape(QFrame.StyledPanel)
@@ -1276,6 +1533,10 @@ class CircuitWindow(QMainWindow):
         inspector_layout.setContentsMargins(8, 8, 8, 8)
         inspector_layout.addWidget(QLabel("Editor Settings"))
 
+        sim_form = QFormLayout()
+        sim_form.addRow("Simulation mode", self._sim_mode)
+        inspector_layout.addLayout(sim_form)
+
         sweep_form = QFormLayout()
         sweep_form.addRow("Unit", self._frequency_unit)
         sweep_form.addRow("Fmin", self._fmin)
@@ -1284,12 +1545,16 @@ class CircuitWindow(QMainWindow):
         inspector_layout.addLayout(sweep_form)
 
         impedance_form = QFormLayout()
-        impedance_form.addRow("Selected impedance", self._impedance_editor)
+        impedance_form.addRow(self._impedance_label, self._impedance_editor)
         impedance_form.addRow("Selected symbol size", self._symbol_size_editor)
         inspector_layout.addLayout(impedance_form)
 
         inspector_layout.addWidget(self._export_button)
+        inspector_layout.addWidget(self._driver_settings_group)
+        inspector_layout.addWidget(self._stat_group)
+        inspector_layout.addWidget(self._channel_sim_button)
         inspector_layout.addWidget(self._status_label)
+        inspector_layout.addStretch(1)
 
         canvas_panel = QFrame()
         canvas_panel.setFrameShape(QFrame.StyledPanel)
@@ -1383,6 +1648,19 @@ class CircuitWindow(QMainWindow):
             nports = loaded.data.nports
             impedance_ohm = loaded.data.options.reference_resistance
 
+        driver_spec = None
+        if block_kind in {"driver_se", "driver_diff"}:
+            driver_spec = DriverSpec(
+                voltage_high_v=self._drv_v_high.value(),
+                voltage_low_v=self._drv_v_low.value(),
+                rise_time_s=self._drv_rise_time.value() * 1e-12,
+                fall_time_s=self._drv_fall_time.value() * 1e-12,
+                bitrate_gbps=self._drv_bitrate.value(),
+                prbs_pattern=self._drv_prbs.currentText(),
+                encoding=self._drv_encoding.currentText(),
+                num_bits=self._drv_num_bits.value(),
+            )
+
         instance = self._document.add_instance(
             source_file_id=source_file_id,
             display_label=display_label,
@@ -1392,6 +1670,7 @@ class CircuitWindow(QMainWindow):
             block_kind=block_kind,
             impedance_ohm=impedance_ohm,
             symbol_scale=symbol_scale,
+            driver_spec=driver_spec,
         )
         block_item = CircuitBlockItem(self._scene, instance)
         self._scene.register_block(block_item)
@@ -1409,7 +1688,10 @@ class CircuitWindow(QMainWindow):
             self._selected_instance_id = None
             self._updating_impedance_editor = True
             self._impedance_editor.setEnabled(False)
+            self._impedance_editor.setSuffix(" Ohm")
+            self._impedance_editor.setRange(0.001, 1e9)
             self._impedance_editor.setValue(50.0)
+            self._impedance_label.setText("Value")
             self._updating_impedance_editor = False
             self._updating_symbol_size_editor = True
             self._symbol_size_editor.setEnabled(False)
@@ -1417,12 +1699,34 @@ class CircuitWindow(QMainWindow):
             self._updating_symbol_size_editor = False
             return
         self._selected_instance_id = block_item.instance.instance_id
+        kind = block_item.instance.block_kind
         self._updating_impedance_editor = True
-        self._impedance_editor.setEnabled(block_item.instance.block_kind in {"port_ground", "port_diff"})
+        editable_kinds = {"port_ground", "port_diff", "lumped_r", "lumped_l", "lumped_c"}
+        self._impedance_editor.setEnabled(kind in editable_kinds)
+        if kind == "lumped_r":
+            self._impedance_editor.setSuffix(" Ohm")
+            self._impedance_editor.setRange(1e-6, 1e12)
+            self._impedance_editor.setDecimals(6)
+            self._impedance_label.setText("Resistance")
+        elif kind == "lumped_l":
+            self._impedance_editor.setSuffix(" H")
+            self._impedance_editor.setRange(1e-15, 1e3)
+            self._impedance_editor.setDecimals(15)
+            self._impedance_label.setText("Inductance")
+        elif kind == "lumped_c":
+            self._impedance_editor.setSuffix(" F")
+            self._impedance_editor.setRange(1e-18, 1e3)
+            self._impedance_editor.setDecimals(18)
+            self._impedance_label.setText("Capacitance")
+        else:
+            self._impedance_editor.setSuffix(" Ohm")
+            self._impedance_editor.setRange(0.001, 1e9)
+            self._impedance_editor.setDecimals(6)
+            self._impedance_label.setText("Impedance")
         self._impedance_editor.setValue(block_item.instance.impedance_ohm)
         self._updating_impedance_editor = False
         self._updating_symbol_size_editor = True
-        self._symbol_size_editor.setEnabled(block_item.instance.block_kind != "touchstone")
+        self._symbol_size_editor.setEnabled(kind != "touchstone")
         self._symbol_size_editor.setValue(float(getattr(block_item.instance, "symbol_scale", 1.0)))
         self._updating_symbol_size_editor = False
 
@@ -1430,14 +1734,15 @@ class CircuitWindow(QMainWindow):
         if self._updating_impedance_editor or self._selected_instance_id is None:
             return
         instance = self._document.get_instance(self._selected_instance_id)
-        if instance is None or instance.block_kind not in {"port_ground", "port_diff"}:
+        if instance is None or instance.block_kind not in {"port_ground", "port_diff", "lumped_r", "lumped_l", "lumped_c"}:
             return
         self._document.update_instance_impedance(self._selected_instance_id, value)
         block_item = self._scene._block_items.get(self._selected_instance_id)
         updated_instance = self._document.get_instance(self._selected_instance_id)
         if block_item is not None and updated_instance is not None:
             block_item.sync_from_instance(updated_instance)
-        self._status_label.setText(f"Impedance updated to {value:g} Ohm.")
+        suffix = _block_value_suffix(instance.block_kind)
+        self._status_label.setText(f"Value updated to {value:g}{suffix}.")
         self._refresh_validation_state()
         self._emit_project_modified()
 
@@ -1538,6 +1843,8 @@ class CircuitWindow(QMainWindow):
         )
 
     def _refresh_validation_state(self) -> None:
+        if self._sim_mode.currentText() == "Channel Sim":
+            self._refresh_output_port_list()
         issues = self._document.validate()
         if issues:
             self._export_button.setEnabled(False)
@@ -1773,10 +2080,122 @@ class CircuitWindow(QMainWindow):
                 mirror_vertical=not instance.mirror_vertical,
             )
 
+    # ------------------------------------------------------------------ #
+    #  Channel simulation helpers                                         #
+    # ------------------------------------------------------------------ #
+
+    def _on_stat_enabled_changed(self, checked: bool) -> None:
+        self._stat_noise.setEnabled(checked)
+        self._stat_jitter.setEnabled(checked)
+
+    def _on_sim_mode_changed(self, mode: str) -> None:  # noqa: F811
+        is_channel = mode == "Channel Sim"
+        self._export_button.setVisible(not is_channel)
+        self._channel_sim_button.setVisible(is_channel)
+        self._driver_settings_group.setVisible(is_channel)
+        self._stat_group.setVisible(is_channel)
+        if is_channel:
+            self._refresh_output_port_list()
+
+    def _refresh_output_port_list(self) -> None:
+        self._drv_output_port_instance.clear()
+        for inst in self._document.instances:
+            if inst.block_kind in {"port_ground", "port_diff"}:
+                label = f"{inst.block_kind} ({inst.instance_id[:8]})"
+                self._drv_output_port_instance.addItem(label, inst.instance_id)
+
+    def _run_channel_simulation(self) -> None:
+        # Find the driver instance in the document
+        driver_inst = None
+        for inst in self._document.instances:
+            if inst.block_kind in {"driver_se", "driver_diff"}:
+                driver_inst = inst
+                break
+        if driver_inst is None:
+            QMessageBox.warning(self, "Channel Sim", "No driver block found in the circuit.")
+            return
+
+        # Update driver spec from UI controls
+        spec = DriverSpec(
+            voltage_high_v=self._drv_v_high.value(),
+            voltage_low_v=self._drv_v_low.value(),
+            rise_time_s=self._drv_rise_time.value() * 1e-12,
+            fall_time_s=self._drv_fall_time.value() * 1e-12,
+            bitrate_gbps=self._drv_bitrate.value(),
+            prbs_pattern=self._drv_prbs.currentText(),
+            encoding=self._drv_encoding.currentText(),
+            num_bits=self._drv_num_bits.value(),
+        )
+        self._document.update_instance_driver_spec(driver_inst.instance_id, spec)
+
+        # Get selected output port
+        out_idx = self._drv_output_port_instance.currentIndex()
+        if out_idx < 0:
+            QMessageBox.warning(self, "Channel Sim", "No output port selected.")
+            return
+        out_instance_id = self._drv_output_port_instance.itemData(out_idx)
+
+        progress = QProgressDialog("Running channel simulation...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Channel Simulation")
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setValue(0)
+
+        def _on_progress(percent: int, label: str) -> None:
+            if progress.wasCanceled():
+                raise InterruptedError("Simulation cancelled by user.")
+            progress.setLabelText(label)
+            progress.setValue(percent)
+            QApplication.processEvents()
+
+        try:
+            self._status_label.setText("Running channel simulation...")
+            result = simulate_channel(
+                self._document,
+                self._state,
+                driver_instance_id=driver_inst.instance_id,
+                output_port_instance_id=out_instance_id,
+                progress_callback=_on_progress,
+            )
+        except InterruptedError:
+            self._status_label.setText("Channel simulation cancelled.")
+            progress.close()
+            return
+        except Exception as exc:
+            progress.close()
+            self._status_label.setText(f"Channel simulation failed: {exc}")
+            QMessageBox.warning(self, "Channel Sim failed", str(exc))
+            return
+
+        progress.setValue(100)
+        progress.close()
+        self._status_label.setText("Channel simulation complete.")
+        win = EyeDiagramWindow(
+            result,
+            title=f"Eye Diagram – Circuit #{self.window_number}",
+            parent=self,
+            initial_span_ui=self._selected_eye_span_ui(),
+            initial_render_mode=self._selected_eye_render_mode(),
+            statistical_enabled=self._stat_enabled.isChecked(),
+            noise_rms_mv=self._stat_noise.value(),
+            jitter_rms_ps=self._stat_jitter.value(),
+        )
+        win.span_changed.connect(self._on_eye_span_window_changed)
+        win.render_mode_changed.connect(self._on_eye_render_mode_window_changed)
+        win.setAttribute(Qt.WA_DeleteOnClose)
+        win.show()
+        self._eye_windows.append(win)
+
     def export_project_state(self) -> dict:
         return {
             "window_title": self.windowTitle(),
             "splitter_sizes": self._splitter.sizes(),
+            "simulation_mode": self._sim_mode.currentText(),
+            "eye_span_ui": self._selected_eye_span_ui(),
+            "eye_render_mode": self._selected_eye_render_mode(),
+            "stat_enabled": self._stat_enabled.isChecked(),
+            "stat_noise_mv": self._stat_noise.value(),
+            "stat_jitter_ps": self._stat_jitter.value(),
             **self._document.to_dict(),
         }
 
@@ -1832,8 +2251,45 @@ class CircuitWindow(QMainWindow):
         elif isinstance(sizes, list) and len(sizes) == 2 and all(isinstance(v, int) for v in sizes):
             self._splitter.setSizes([sizes[0], sizes[1], 330])
 
+        simulation_mode = str(state.get("simulation_mode", "S-Parameters"))
+        if self._sim_mode.findText(simulation_mode) >= 0:
+            self._sim_mode.blockSignals(True)
+            self._sim_mode.setCurrentText(simulation_mode)
+            self._sim_mode.blockSignals(False)
+        self._on_sim_mode_changed(self._sim_mode.currentText())
+
+        eye_span_ui = state.get("eye_span_ui", DEFAULT_EYE_SPAN_UI)
+        eye_span_index = self._drv_eye_span.findData(int(eye_span_ui))
+        if eye_span_index >= 0:
+            self._drv_eye_span.blockSignals(True)
+            self._drv_eye_span.setCurrentIndex(eye_span_index)
+            self._drv_eye_span.blockSignals(False)
+
+        eye_render_mode = str(state.get("eye_render_mode", DEFAULT_RENDER_MODE))
+        eye_render_index = self._drv_eye_render_mode.findData(eye_render_mode)
+        if eye_render_index >= 0:
+            self._drv_eye_render_mode.blockSignals(True)
+            self._drv_eye_render_mode.setCurrentIndex(eye_render_index)
+            self._drv_eye_render_mode.blockSignals(False)
+
         self._scene.rebuild_export_state(self._document)
         self._refresh_validation_state()
+
+        stat_enabled = bool(state.get("stat_enabled", False))
+        self._stat_enabled.blockSignals(True)
+        self._stat_enabled.setChecked(stat_enabled)
+        self._stat_enabled.blockSignals(False)
+        self._on_stat_enabled_changed(stat_enabled)
+
+        stat_noise_mv = float(state.get("stat_noise_mv", 0.0))
+        self._stat_noise.blockSignals(True)
+        self._stat_noise.setValue(stat_noise_mv)
+        self._stat_noise.blockSignals(False)
+
+        stat_jitter_ps = float(state.get("stat_jitter_ps", 0.0))
+        self._stat_jitter.blockSignals(True)
+        self._stat_jitter.setValue(stat_jitter_ps)
+        self._stat_jitter.blockSignals(False)
 
     def _export_equivalent_touchstone(self) -> None:
         format_choices = ["RI", "MA", "DB"]
@@ -1907,3 +2363,23 @@ class CircuitWindow(QMainWindow):
 
     def _emit_project_modified(self) -> None:
         self.project_modified.emit()
+
+    def _selected_eye_span_ui(self) -> int:
+        span_ui = self._drv_eye_span.currentData()
+        return int(span_ui) if span_ui is not None else DEFAULT_EYE_SPAN_UI
+
+    def _selected_eye_render_mode(self) -> str:
+        render_mode = self._drv_eye_render_mode.currentData()
+        return str(render_mode) if render_mode is not None else DEFAULT_RENDER_MODE
+
+    def _on_eye_span_window_changed(self, span_ui: int) -> None:
+        eye_span_index = self._drv_eye_span.findData(int(span_ui))
+        if eye_span_index < 0 or eye_span_index == self._drv_eye_span.currentIndex():
+            return
+        self._drv_eye_span.setCurrentIndex(eye_span_index)
+
+    def _on_eye_render_mode_window_changed(self, render_mode: str) -> None:
+        eye_render_index = self._drv_eye_render_mode.findData(str(render_mode))
+        if eye_render_index < 0 or eye_render_index == self._drv_eye_render_mode.currentIndex():
+            return
+        self._drv_eye_render_mode.setCurrentIndex(eye_render_index)

@@ -1,7 +1,59 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+PRBS_CHOICES = ["PRBS-7", "PRBS-8", "PRBS-9", "PRBS-10", "PRBS-11", "PRBS-12", "PRBS-13", "PRBS-15", "PRBS-20", "PRBS-23", "PRBS-31"]
+ENCODING_CHOICES = ["None", "8b10b", "64b66b", "128b130b", "PAM4"]
+
+
+@dataclass(frozen=True)
+class DriverSpec:
+    voltage_high_v: float = 0.4
+    voltage_low_v: float = 0.0
+    rise_time_s: float = 35e-12
+    fall_time_s: float = 35e-12
+    bitrate_gbps: float = 10.0
+    prbs_pattern: str = "PRBS-7"
+    encoding: str = "None"
+    num_bits: int = 2**13
+
+    def to_dict(self) -> dict:
+        return {
+            "voltage_high_v": self.voltage_high_v,
+            "voltage_low_v": self.voltage_low_v,
+            "rise_time_s": self.rise_time_s,
+            "fall_time_s": self.fall_time_s,
+            "bitrate_gbps": self.bitrate_gbps,
+            "prbs_pattern": self.prbs_pattern,
+            "encoding": self.encoding,
+            "num_bits": self.num_bits,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "DriverSpec":
+        return cls(
+            voltage_high_v=float(payload.get("voltage_high_v", 0.45)),
+            voltage_low_v=float(payload.get("voltage_low_v", -0.45)),
+            rise_time_s=float(payload.get("rise_time_s", 25e-12)),
+            fall_time_s=float(payload.get("fall_time_s", 25e-12)),
+            bitrate_gbps=float(payload.get("bitrate_gbps", 10.0)),
+            prbs_pattern=str(payload.get("prbs_pattern", "PRBS-7")),
+            encoding=str(payload.get("encoding", "None")),
+            num_bits=int(payload.get("num_bits", 2**13)),
+        )
+
+
+@dataclass(frozen=True)
+class ChannelSimSpec:
+    num_bits: int = 2**13
+
+    def to_dict(self) -> dict:
+        return {"num_bits": self.num_bits}
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "ChannelSimSpec":
+        return cls(num_bits=int(payload.get("num_bits", 2**13)))
 
 
 @dataclass(frozen=True)
@@ -65,9 +117,10 @@ class CircuitBlockInstance:
     rotation_deg: int = 0
     mirror_horizontal: bool = False
     mirror_vertical: bool = False
+    driver_spec: Optional[DriverSpec] = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "instance_id": self.instance_id,
             "source_file_id": self.source_file_id,
             "display_label": self.display_label,
@@ -81,9 +134,13 @@ class CircuitBlockInstance:
             "mirror_horizontal": self.mirror_horizontal,
             "mirror_vertical": self.mirror_vertical,
         }
+        if self.driver_spec is not None:
+            d["driver_spec"] = self.driver_spec.to_dict()
+        return d
 
     @classmethod
     def from_dict(cls, payload: dict) -> "CircuitBlockInstance":
+        ds = payload.get("driver_spec")
         return cls(
             instance_id=str(payload.get("instance_id", "")),
             source_file_id=str(payload.get("source_file_id", "")),
@@ -97,6 +154,7 @@ class CircuitBlockInstance:
             rotation_deg=int(payload.get("rotation_deg", 0)),
             mirror_horizontal=bool(payload.get("mirror_horizontal", False)),
             mirror_vertical=bool(payload.get("mirror_vertical", False)),
+            driver_spec=DriverSpec.from_dict(ds) if isinstance(ds, dict) else None,
         )
 
 
@@ -206,6 +264,7 @@ class CircuitDocument:
         rotation_deg: int = 0,
         mirror_horizontal: bool = False,
         mirror_vertical: bool = False,
+        driver_spec: Optional[DriverSpec] = None,
     ) -> CircuitBlockInstance:
         instance = CircuitBlockInstance(
             instance_id=self.next_instance_id(),
@@ -220,6 +279,7 @@ class CircuitDocument:
             rotation_deg=rotation_deg,
             mirror_horizontal=mirror_horizontal,
             mirror_vertical=mirror_vertical,
+            driver_spec=driver_spec,
         )
         self.instances.append(instance)
         self.rebuild_external_ports_from_instances()
@@ -242,6 +302,7 @@ class CircuitDocument:
                 rotation_deg=instance.rotation_deg,
                 mirror_horizontal=instance.mirror_horizontal,
                 mirror_vertical=instance.mirror_vertical,
+                driver_spec=instance.driver_spec,
             )
             return
 
@@ -262,6 +323,7 @@ class CircuitDocument:
                 rotation_deg=instance.rotation_deg,
                 mirror_horizontal=instance.mirror_horizontal,
                 mirror_vertical=instance.mirror_vertical,
+                driver_spec=instance.driver_spec,
             )
             return
 
@@ -282,6 +344,7 @@ class CircuitDocument:
                 rotation_deg=instance.rotation_deg,
                 mirror_horizontal=instance.mirror_horizontal,
                 mirror_vertical=instance.mirror_vertical,
+                driver_spec=instance.driver_spec,
             )
             return
 
@@ -309,6 +372,28 @@ class CircuitDocument:
                 rotation_deg=rotation_deg,
                 mirror_horizontal=mirror_horizontal,
                 mirror_vertical=mirror_vertical,
+                driver_spec=instance.driver_spec,
+            )
+            return
+
+    def update_instance_driver_spec(self, instance_id: str, driver_spec: Optional[DriverSpec]) -> None:
+        for index, instance in enumerate(self.instances):
+            if instance.instance_id != instance_id:
+                continue
+            self.instances[index] = CircuitBlockInstance(
+                instance_id=instance.instance_id,
+                source_file_id=instance.source_file_id,
+                display_label=instance.display_label,
+                nports=instance.nports,
+                position_x=instance.position_x,
+                position_y=instance.position_y,
+                block_kind=instance.block_kind,
+                impedance_ohm=instance.impedance_ohm,
+                symbol_scale=instance.symbol_scale,
+                rotation_deg=instance.rotation_deg,
+                mirror_horizontal=instance.mirror_horizontal,
+                mirror_vertical=instance.mirror_vertical,
+                driver_spec=driver_spec,
             )
             return
 
@@ -343,6 +428,25 @@ class CircuitDocument:
                     ExternalPortAssignment(
                         external_port_number=index,
                         port_ref=CircuitPortRef(instance_id=instance.instance_id, port_number=1),
+                    )
+                )
+                index += 1
+                continue
+            if instance.block_kind == "driver_se":
+                external.append(
+                    ExternalPortAssignment(
+                        external_port_number=index,
+                        port_ref=CircuitPortRef(instance_id=instance.instance_id, port_number=1),
+                    )
+                )
+                index += 1
+                continue
+            if instance.block_kind == "driver_diff":
+                differential.append(
+                    DifferentialPortAssignment(
+                        external_port_number=index,
+                        port_ref_plus=CircuitPortRef(instance_id=instance.instance_id, port_number=1),
+                        port_ref_minus=CircuitPortRef(instance_id=instance.instance_id, port_number=2),
                     )
                 )
                 index += 1

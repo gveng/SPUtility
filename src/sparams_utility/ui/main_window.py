@@ -42,6 +42,7 @@ class MainWindow(QMainWindow):
         self._tdr_counter: int = 0
         self._circuit_counter: int = 0
         self._project_dirty: bool = False
+        self._project_path: str | None = None
 
         # MDI area as central widget — all sub-windows live here
         self._mdi = QMdiArea()
@@ -51,9 +52,10 @@ class MainWindow(QMainWindow):
 
         # ── File ──────────────────────────────────────────────────────────
         file_menu = self.menuBar().addMenu("File")
-        file_menu.addAction("Open File", self._open_files)
         file_menu.addAction("Open Project", self._open_project)
-        file_menu.addAction("Save Project", lambda: self._save_project())
+        file_menu.addAction("Save Project", self._save_project)
+        file_menu.addAction("Save Project As", self._save_project_as)
+        file_menu.addAction("Open File", self._open_files)
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
 
@@ -115,16 +117,7 @@ class MainWindow(QMainWindow):
         elif added_count > 0:
             self._mark_project_dirty()
 
-    def _save_project(self) -> bool:
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Project",
-            "SPUtility_project.json",
-            "SPUtility Project (*.json);;All files (*)",
-        )
-        if not file_path:
-            return False
-
+    def _build_project_payload(self) -> dict:
         loaded_files = self._state.get_loaded_files()
         files_data = [
             {
@@ -152,7 +145,7 @@ class MainWindow(QMainWindow):
                 state["window_size"] = [sub.width(), sub.height()]
                 circuit_windows.append(state)
 
-        payload = {
+        return {
             "app_name": pkg.__app_name__,
             "app_version": pkg.__version__,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
@@ -162,6 +155,9 @@ class MainWindow(QMainWindow):
             "circuits": circuit_windows,
         }
 
+    def _save_project_to_path(self, file_path: str) -> bool:
+        payload = self._build_project_payload()
+
         try:
             with open(file_path, "w", encoding="utf-8") as fp:
                 json.dump(payload, fp, indent=2)
@@ -169,9 +165,28 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save failed", f"Could not save project:\n{exc}")
             return False
 
+        self._project_path = file_path
         self._project_dirty = False
         QMessageBox.information(self, "Project saved", f"Project saved to:\n{file_path}")
         return True
+
+    def _save_project_as(self) -> bool:
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Project As",
+            self._project_path or "SPUtility_project.json",
+            "SPUtility Project (*.json);;All files (*)",
+        )
+        if not file_path:
+            return False
+
+        return self._save_project_to_path(file_path)
+
+    def _save_project(self) -> bool:
+        if self._project_path is None:
+            return self._save_project_as()
+
+        return self._save_project_to_path(self._project_path)
 
     def _open_project(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -281,6 +296,7 @@ class MainWindow(QMainWindow):
                 "Project loaded",
                 f"Loaded {len(file_paths)} file(s), restored {restored_plot} plot window(s), restored {restored_tdr} TDR window(s), and restored {restored_circuit} circuit window(s).",
             )
+        self._project_path = file_path
         self._project_dirty = False
 
     # ── Tables menu ───────────────────────────────────────────────────────

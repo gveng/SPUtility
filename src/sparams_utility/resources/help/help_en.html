@@ -197,6 +197,46 @@
   </p>
 
   <h2>View Menu</h2>
+    <h2>Channel Simulation and Eye Diagram</h2>
+    <p>
+      The circuit editor supports a <b>Channel Sim</b> mode that runs a time-domain signal
+      integrity simulation through the assembled S-parameter network.
+      Switch to Channel Sim mode using the <b>Simulation mode</b> drop-down in the right panel.
+    </p>
+    <p><b>Driver Settings</b></p>
+    <ul>
+      <li><b>V high / V low</b>: output voltage levels of the transmitter (default ±400 mV).</li>
+      <li><b>Rise / Fall time</b>: edge transition time of the driver (default 25 ps).</li>
+      <li><b>Bitrate</b>: transmission rate in Gbps.</li>
+      <li><b>PRBS pattern</b>: pseudo-random bit sequence used as the test pattern (e.g. PRBS-8, PRBS-31).</li>
+      <li><b>Encoding</b>: line code applied to the bit stream (None, 8b10b, 64b66b, 128b130b, PAM4).</li>
+      <li><b>Num bits</b>: total number of bits to simulate.</li>
+      <li><b>Output port</b>: the port instance used as the channel output.</li>
+      <li><b>Eye span</b>: how many UI to display in each eye diagram window (1, 2, or 3 UI).</li>
+      <li><b>Eye render</b>: rendering mode — <i>Heatmap</i>, <i>Lines</i>, or <i>Heatmap + Lines</i>.</li>
+    </ul>
+    <p><b>Simulazione Statistica</b></p>
+    <p>
+      When enabled, each trace of the eye diagram is perturbed with independent random noise and jitter
+      before rendering. This produces a statistically spread eye that approximates the effect of
+      Gaussian random noise and random jitter sources on the real channel.
+    </p>
+    <ul>
+      <li><b>Abilita simulazione statistica</b>: enables the statistical perturbation. Off by default.</li>
+      <li><b>Noise RMS</b>: root-mean-square amplitude of the Gaussian voltage noise added to each sample (mV).</li>
+      <li><b>Jitter RMS</b>: root-mean-square temporal uncertainty applied to each trace start point (ps).</li>
+    </ul>
+    <p><b>Eye Diagram window</b></p>
+    <ul>
+      <li>Background is white; the heatmap uses a <b>white → blue → yellow</b> color scale
+          (white = zero hits, blue = low density, yellow = peak density).</li>
+      <li>The <b>Diagnostics</b> bar shows detected signal levels, phase score, rendering mode, and trace count.</li>
+      <li>Vertical dashed markers indicate the UI boundary positions.</li>
+      <li>Phase is automatically aligned to maximize the eye opening using a multi-level scoring algorithm
+          that also supports PAM4 signals.</li>
+    </ul>
+
+    <h2>View Menu</h2>
   <ul>
     <li><b>Tile windows</b>: arranges sub-windows in a tiled layout.</li>
     <li><b>Cascade windows</b>: stacks sub-windows in cascade order.</li>
