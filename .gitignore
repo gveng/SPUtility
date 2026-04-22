@@ -7,6 +7,8 @@ __pycache__/
 dist/
 build/
 .eggs/
+*_build.log
+*_build_utf8.log
 
 # Virtual environments
 .venv/
