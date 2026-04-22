@@ -10,8 +10,10 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QLineEdit,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QMainWindow,
     QMenu,
     QSplitter,
@@ -47,7 +49,8 @@ class PlotWindow(QMainWindow):
     def __init__(self, state: AppState, parent=None, window_number: int = 1) -> None:
         super().__init__(parent)
         self.window_number = window_number
-        self.setWindowTitle(f"S-Parameter Plots #{window_number}")
+        self._plot_name = f"Plot #{window_number}"
+        self._refresh_window_title()
         self.resize(1250, 800)
         app = QApplication.instance()
         if app is not None:
@@ -112,6 +115,13 @@ class PlotWindow(QMainWindow):
         self._selection_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self._selection_table.customContextMenuRequested.connect(self._on_table_context_menu)
 
+        self._plot_name_edit = QLineEdit(self._plot_name)
+        self._plot_name_edit.textChanged.connect(self._on_plot_name_changed)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(6, 6, 6, 2)
+        title_row.addWidget(QLabel("Plot name"))
+        title_row.addWidget(self._plot_name_edit)
+
         # ── Splitter: table top (30%), plot bottom (70%) ──────────────────
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self._selection_table)
@@ -123,11 +133,20 @@ class PlotWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        layout.addLayout(title_row)
         layout.addWidget(splitter)
         self.setCentralWidget(container)
 
         self._state.files_changed.connect(self.refresh_from_state)
         self.refresh_from_state()
+
+    def _refresh_window_title(self) -> None:
+        self.setWindowTitle(self._plot_name.strip() or f"Plot #{self.window_number}")
+
+    def _on_plot_name_changed(self, value: str) -> None:
+        self._plot_name = value.strip() or f"Plot #{self.window_number}"
+        self._refresh_window_title()
+        self.project_modified.emit()
 
     # ── Table population ──────────────────────────────────────────────────
 
@@ -314,6 +333,19 @@ class PlotWindow(QMainWindow):
             vb.setYRange(self._settings.y_min, self._settings.y_max, padding=0.0)
 
     def apply_project_state(self, state: dict) -> None:
+        plot_name = str(state.get("plot_name", "")).strip()
+        if not plot_name:
+            title = str(state.get("window_title", "")).strip()
+            if title:
+                plot_name = title
+        if not plot_name:
+            plot_name = f"Plot #{self.window_number}"
+        self._plot_name = plot_name
+        self._plot_name_edit.blockSignals(True)
+        self._plot_name_edit.setText(plot_name)
+        self._plot_name_edit.blockSignals(False)
+        self._refresh_window_title()
+
         settings = state.get("plot_settings", {})
         self._settings = PlotSettings(
             x_log=bool(settings.get("x_log", False)),
@@ -381,6 +413,7 @@ class PlotWindow(QMainWindow):
 
         return {
             "window_title": self.windowTitle(),
+            "plot_name": self._plot_name,
             "plot_settings": {
                 "x_log": self._settings.x_log,
                 "y_log": self._settings.y_log,

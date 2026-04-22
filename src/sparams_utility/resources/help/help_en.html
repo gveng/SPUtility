@@ -170,14 +170,18 @@ Typical conversion form: S = (I - Z0*Y) * inv(I + Z0*Y)</div>
 Jitter (samples) = jitter_rms_ps * 1e-12 / dt</div>
   <h3>How measurements are detected</h3>
   <ul>
-    <li><b>Level1 / Level0</b>: medians of upper/lower amplitude clusters around the decision center.</li>
-    <li><b>Height</b>: vertical opening at decision center using percentile envelopes.</li>
-    <li><b>Width</b>: contiguous open interval around center, reported in ps.</li>
-    <li>Decision center is automatically recentered near the maximum opening profile.</li>
+    <li><b>One Level / Zero Level</b>: medians of upper/lower amplitude clusters around the decision center.</li>
+    <li><b>Eye Amplitude</b>: One Level - Zero Level.</li>
+    <li><b>Eye Height</b>: vertical opening at decision center using percentile envelopes.</li>
+    <li><b>Eye Width</b>: contiguous open interval around center, reported in ps.</li>
+    <li><b>Eye Crossing</b>: crossing level measured around +/-0.5 UI and normalized to Eye Amplitude (%).</li>
+    <li>Crossings are aligned around -0.5 UI and +0.5 UI on the 2-UI display span.</li>
   </ul>
-  <div class="formula">Height = p5(upper) - p95(lower) at decision center
-Width_UI = open_samples / samples_per_UI
-Width_ps = Width_UI * UI * 1e12</div>
+  <div class="formula">EyeAmplitude = OneLevel - ZeroLevel
+EyeHeight = p5(upper) - p95(lower) at decision center
+EyeWidth_UI = open_samples / samples_per_UI
+EyeWidth_ps = EyeWidth_UI * UI * 1e12
+EyeCrossing_pct = 100 * (CrossingLevel - ZeroLevel) / EyeAmplitude</div>
   <div class="figure">
     <img src="images/eye_measurements.svg" alt="Eye measurements">
     <div class="caption">Eye measurement geometry used by the summary panel.</div>

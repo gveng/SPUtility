@@ -14,6 +14,7 @@ from sparams_utility.ui.eye_diagram_window import (
     _align_to_ui_boundary,
     _build_eye_time_axis,
     _build_eye_density,
+    _estimate_crossing_phase_shift_samples,
     _decision_marker_positions,
     _diagnostic_style_for_score,
     _expected_eye_levels_for_encoding,
@@ -182,6 +183,24 @@ class EyeDiagramWindowHelpersTests(unittest.TestCase):
         score = _score_eye_phase(waveform, 0, len(waveform), samples_per_ui, overlay_samples)
 
         self.assertTrue(np.isneginf(score))
+
+    def test_estimate_crossing_phase_shift_samples_detects_half_ui_offset(self) -> None:
+        samples_per_ui = 16
+        n_segments = 256
+        x = np.arange(samples_per_ui * 2, dtype=float)
+        shift_samples = 3
+        segments: list[np.ndarray] = []
+        for _ in range(n_segments):
+            direction = 1.0 if np.random.rand() > 0.5 else -1.0
+            left_cross = samples_per_ui // 2 + shift_samples
+            right_cross = samples_per_ui + samples_per_ui // 2 + shift_samples
+            left = direction * np.tanh((x - left_cross) / 1.5)
+            right = -direction * np.tanh((x - right_cross) / 1.5)
+            segments.append(left + right)
+
+        segment_matrix = np.asarray(segments, dtype=float)
+        estimated = _estimate_crossing_phase_shift_samples(segment_matrix, samples_per_ui, span_ui=2)
+        self.assertLessEqual(abs(estimated - shift_samples), 1)
 
 
 if __name__ == "__main__":

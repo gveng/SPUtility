@@ -4,7 +4,7 @@ import json
 from typing import Dict
 
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -870,6 +871,24 @@ class CircuitCanvasView(QGraphicsView):
             event.accept()
             return
         super().contextMenuEvent(event)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        if bool(event.modifiers() & Qt.ControlModifier):
+            delta_y = event.angleDelta().y()
+            if delta_y == 0:
+                event.accept()
+                return
+            factor = 1.15 if delta_y > 0 else (1.0 / 1.15)
+            current_scale = float(self.transform().m11())
+            target_scale = current_scale * factor
+            if target_scale < 0.10 or target_scale > 10.0:
+                event.accept()
+                return
+            self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            self.scale(factor, factor)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
 
 class PortItem(QGraphicsPolygonItem):
@@ -2002,11 +2021,14 @@ class CircuitScene(QGraphicsScene):
 
 class CircuitWindow(QMainWindow):
     project_modified = Signal()
+    eye_result_generated = Signal(object)
+    sparameter_result_generated = Signal(object)
 
     def __init__(self, state: AppState, parent=None, window_number: int = 1) -> None:
         super().__init__(parent)
         self.window_number = window_number
-        self.setWindowTitle(f"Circuit Composer #{window_number}")
+        self._circuit_name: str = f"Circuit #{window_number}"
+        self._refresh_window_title()
         self.resize(1450, 900)
         app = QApplication.instance()
         if app is not None:
@@ -2135,6 +2157,9 @@ class CircuitWindow(QMainWindow):
         self._drv_output_port_instance = QComboBox()
         drv_layout.addRow("Output port", self._drv_output_port_instance)
 
+        self._circuit_name_edit = QLineEdit(self._circuit_name)
+        self._circuit_name_edit.textChanged.connect(self._on_circuit_name_changed)
+
         self._drv_eye_span = QComboBox()
         for span_ui in EYE_SPAN_CHOICES:
             self._drv_eye_span.addItem(f"{span_ui} UI", span_ui)
@@ -2211,6 +2236,7 @@ class CircuitWindow(QMainWindow):
         inspector_layout.addWidget(QLabel("Editor Settings"))
 
         sim_form = QFormLayout()
+        sim_form.addRow("Circuit name", self._circuit_name_edit)
         sim_form.addRow("Simulation mode", self._sim_mode)
         inspector_layout.addLayout(sim_form)
 
@@ -2301,6 +2327,232 @@ class CircuitWindow(QMainWindow):
 
     def references_file(self, file_id: str) -> bool:
         return self._document.uses_file(file_id)
+
+    def report_touchstone_file_names(self) -> list[str]:
+        """Return unique Touchstone file names used by the current circuit."""
+        names: list[str] = []
+        seen: set[str] = set()
+        for instance in self._document.instances:
+            if instance.block_kind != "touchstone":
+                continue
+            loaded = self._state.get_file(instance.source_file_id)
+            name = loaded.display_name if loaded is not None else instance.display_label
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+        return names
+
+    def circuit_display_name(self) -> str:
+        return self._circuit_name.strip() or f"Circuit #{self.window_number}"
+
+    def _refresh_window_title(self) -> None:
+        self.setWindowTitle(f"Circuit Composer #{self.window_number} - {self.circuit_display_name()}")
+
+    def _eye_window_title(self) -> str:
+        return f"Eye Diagram - {self.circuit_display_name()}"
+
+    def _sync_eye_window_titles(self) -> None:
+        for win in self.get_open_eye_windows():
+            win.setWindowTitle(self._eye_window_title())
+
+    def _on_circuit_name_changed(self, value: str) -> None:
+        self._circuit_name = value.strip() or f"Circuit #{self.window_number}"
+        self._refresh_window_title()
+        self._sync_eye_window_titles()
+        self._emit_project_modified()
+
+    def get_open_eye_windows(self) -> list[EyeDiagramWindow]:
+        """Return currently alive eye diagram windows opened from this circuit."""
+        alive: list[EyeDiagramWindow] = []
+        for win in self._eye_windows:
+            try:
+                _ = win.windowTitle()
+            except RuntimeError:
+                continue
+            alive.append(win)
+        self._eye_windows = alive
+        return list(alive)
+
+    def generate_eye_window_for_report(self) -> tuple[EyeDiagramWindow | None, str | None]:
+        """Generate an eye window for reports without interactive dialogs."""
+        driver_inst = None
+        for inst in self._document.instances:
+            if inst.block_kind in {"driver_se", "driver_diff"}:
+                driver_inst = inst
+                break
+        if driver_inst is None:
+            return None, "No driver block found in circuit."
+
+        spec = DriverSpec(
+            voltage_high_v=self._drv_v_high.value(),
+            voltage_low_v=self._drv_v_low.value(),
+            rise_time_s=self._drv_rise_time.value() * 1e-12,
+            fall_time_s=self._drv_fall_time.value() * 1e-12,
+            bitrate_gbps=self._drv_bitrate.value(),
+            prbs_pattern=self._drv_prbs.currentText(),
+            encoding=self._drv_encoding.currentText(),
+            num_bits=self._drv_num_bits.value(),
+        )
+        self._document.update_instance_driver_spec(driver_inst.instance_id, spec)
+
+        self._refresh_output_port_list()
+        out_idx = self._drv_output_port_instance.currentIndex()
+        if out_idx < 0 and self._drv_output_port_instance.count() > 0:
+            out_idx = 0
+            self._drv_output_port_instance.setCurrentIndex(0)
+        if out_idx < 0:
+            return None, "No output port selected."
+        out_instance_id = self._drv_output_port_instance.itemData(out_idx)
+
+        try:
+            self._status_label.setText("Running channel simulation for report...")
+            result = simulate_channel(
+                self._document,
+                self._state,
+                driver_instance_id=driver_inst.instance_id,
+                output_port_instance_id=out_instance_id,
+            )
+        except Exception as exc:
+            return None, f"Channel simulation failed: {exc}"
+
+        win = EyeDiagramWindow(
+            result,
+            title=self._eye_window_title(),
+            parent=self,
+            initial_span_ui=self._selected_eye_span_ui(),
+            initial_render_mode=self._selected_eye_render_mode(),
+            initial_quality_preset=self._selected_eye_quality_preset(),
+            statistical_enabled=self._stat_enabled.isChecked(),
+            noise_rms_mv=self._stat_noise.value(),
+            jitter_rms_ps=self._stat_jitter.value(),
+        )
+        win.span_changed.connect(self._on_eye_span_window_changed)
+        win.render_mode_changed.connect(self._on_eye_render_mode_window_changed)
+        win.quality_preset_changed.connect(self._on_eye_quality_preset_window_changed)
+        win.setAttribute(Qt.WA_DeleteOnClose)
+        win.destroyed.connect(lambda *_: self._eye_windows.remove(win) if win in self._eye_windows else None)
+        win.show()
+        QApplication.processEvents()
+        self._eye_windows.append(win)
+        return win, None
+
+    def generate_eye_snapshot_for_project(self) -> tuple[QPixmap | None, str | None]:
+        """Return eye snapshot pixmap for project save; auto-simulate if needed."""
+        open_eyes = self.get_open_eye_windows()
+        if open_eyes:
+            return open_eyes[0].grab_eye_plot_pixmap(), None
+
+        result, err = self.generate_eye_result_for_project()
+        if result is None:
+            return None, err
+
+        eye_window = EyeDiagramWindow(
+            result,
+            title=self._eye_window_title(),
+            parent=None,
+            initial_span_ui=self._selected_eye_span_ui(),
+            initial_render_mode=self._selected_eye_render_mode(),
+            initial_quality_preset=self._selected_eye_quality_preset(),
+            statistical_enabled=self._stat_enabled.isChecked(),
+            noise_rms_mv=self._stat_noise.value(),
+            jitter_rms_ps=self._stat_jitter.value(),
+        )
+        pixmap = eye_window.grab_eye_plot_pixmap()
+        eye_window.close()
+        eye_window.deleteLater()
+        return pixmap, None
+
+    def generate_eye_result_for_project(self) -> tuple[ChannelSimResult | None, str | None]:
+        """Run channel simulation and return the raw result for project-side exports."""
+
+        driver_inst = None
+        for inst in self._document.instances:
+            if inst.block_kind in {"driver_se", "driver_diff"}:
+                driver_inst = inst
+                break
+        if driver_inst is None:
+            return None, "No driver block found in circuit."
+
+        spec = DriverSpec(
+            voltage_high_v=self._drv_v_high.value(),
+            voltage_low_v=self._drv_v_low.value(),
+            rise_time_s=self._drv_rise_time.value() * 1e-12,
+            fall_time_s=self._drv_fall_time.value() * 1e-12,
+            bitrate_gbps=self._drv_bitrate.value(),
+            prbs_pattern=self._drv_prbs.currentText(),
+            encoding=self._drv_encoding.currentText(),
+            num_bits=self._drv_num_bits.value(),
+        )
+        self._document.update_instance_driver_spec(driver_inst.instance_id, spec)
+
+        self._refresh_output_port_list()
+        out_idx = self._drv_output_port_instance.currentIndex()
+        if out_idx < 0 and self._drv_output_port_instance.count() > 0:
+            out_idx = 0
+            self._drv_output_port_instance.setCurrentIndex(0)
+        if out_idx < 0:
+            return None, "No output port selected."
+        out_instance_id = self._drv_output_port_instance.itemData(out_idx)
+
+        try:
+            result = simulate_channel(
+                self._document,
+                self._state,
+                driver_instance_id=driver_inst.instance_id,
+                output_port_instance_id=out_instance_id,
+            )
+        except Exception as exc:
+            return None, f"Channel simulation failed: {exc}"
+        return result, None
+
+    def export_equivalent_touchstone_for_project(self) -> tuple[str | None, str | None, str | None]:
+        """Return filename and Touchstone content for project-side export."""
+        try:
+            result = solve_circuit_network(self._document, self._state)
+            text = to_touchstone_string_with_format(
+                result,
+                data_format="DB",
+                frequency_unit=self._document.sweep.display_unit,
+            )
+        except Exception as exc:
+            return None, None, str(exc)
+
+        safe_name = "".join(
+            ch if (ch.isalnum() or ch in {"-", "_"}) else "_"
+            for ch in self.circuit_display_name()
+        ).strip("_")
+        if not safe_name:
+            safe_name = f"Circuit_{self.window_number}"
+        file_name = f"{safe_name}.s{result.nports}p"
+        return file_name, text, None
+
+    def grab_circuit_snapshot_pixmap(self):
+        """Return a full-scene snapshot of the circuit for reports."""
+        bounds = self._scene.itemsBoundingRect()
+        if bounds.isNull() or bounds.width() <= 0.0 or bounds.height() <= 0.0:
+            return self._canvas.grab()
+
+        pad = 40.0
+        source_rect = bounds.adjusted(-pad, -pad, pad, pad)
+        max_w = 2200.0
+        max_h = 1400.0
+        scale = min(max_w / source_rect.width(), max_h / source_rect.height())
+        scale = max(scale, 0.10)
+        target_w = max(1, int(round(source_rect.width() * scale)))
+        target_h = max(1, int(round(source_rect.height() * scale)))
+
+        pixmap = QPixmap(target_w, target_h)
+        pixmap.fill(QColor("#f7f7f7"))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        self._scene.render(
+            painter,
+            QRectF(0.0, 0.0, float(target_w), float(target_h)),
+            source_rect,
+        )
+        painter.end()
+        return pixmap
 
     def _on_file_dropped(self, file_id: str, scene_pos: QPointF) -> None:
         try:
@@ -2917,9 +3169,24 @@ class CircuitWindow(QMainWindow):
 
         progress.setValue(100)
         progress.close()
+
+        # Notify host window so the binary eye artifact can be persisted immediately.
+        self.eye_result_generated.emit(
+            {
+                "result": result,
+                "circuit_name": self.circuit_display_name(),
+                "eye_span_ui": int(self._selected_eye_span_ui()),
+                "render_mode": str(self._selected_eye_render_mode()),
+                "quality_preset": str(self._selected_eye_quality_preset()),
+                "stat_enabled": bool(self._stat_enabled.isChecked()),
+                "noise_rms_mv": float(self._stat_noise.value()),
+                "jitter_rms_ps": float(self._stat_jitter.value()),
+            }
+        )
+
         win = EyeDiagramWindow(
             result,
-            title=f"Eye Diagram – Circuit #{self.window_number}",
+            title=self._eye_window_title(),
             parent=self,
             initial_span_ui=self._selected_eye_span_ui(),
             initial_render_mode=self._selected_eye_render_mode(),
@@ -2932,6 +3199,7 @@ class CircuitWindow(QMainWindow):
         win.render_mode_changed.connect(self._on_eye_render_mode_window_changed)
         win.quality_preset_changed.connect(self._on_eye_quality_preset_window_changed)
         win.setAttribute(Qt.WA_DeleteOnClose)
+        win.destroyed.connect(lambda *_: self._eye_windows.remove(win) if win in self._eye_windows else None)
         win.show()
         self._eye_windows.append(win)
 
@@ -2943,18 +3211,26 @@ class CircuitWindow(QMainWindow):
         def _fps(v: float) -> str:
             import math as _math
             return "n/a" if not _math.isfinite(v) else f"{v:.2f} ps"
-        width_ps = s.get("width_ps", float("nan"))
+        def _fpc(v: float) -> str:
+            import math as _math
+            return "n/a" if not _math.isfinite(v) else f"{v:.2f} %"
+        width_ps = s.get("eye_width_ps", s.get("width_ps", float("nan")))
+        bit_period_ps = s.get("bit_period_ps", float("nan"))
         self._status_label.setText(
             f"Channel sim done │ "
-            f"Level1: {_fmv(s.get('level1', float('nan')))}  "
-            f"Level0: {_fmv(s.get('level0', float('nan')))}  "
-            f"Height: {_fmv(s.get('height', float('nan')))}  "
-            f"Width: {_fps(width_ps)}"
+            f"One: {_fmv(s.get('one_level', s.get('level1', float('nan'))))}  "
+            f"Zero: {_fmv(s.get('zero_level', s.get('level0', float('nan'))))}  "
+            f"Amp: {_fmv(s.get('eye_amplitude', float('nan')))}  "
+            f"Height: {_fmv(s.get('eye_height', s.get('height', float('nan'))))}  "
+            f"Width: {_fps(width_ps)}  "
+            f"Cross: {_fpc(s.get('eye_crossing_pct', float('nan')))}  "
+            f"Bit: {_fps(bit_period_ps)}"
         )
 
     def export_project_state(self) -> dict:
         return {
             "window_title": self.windowTitle(),
+            "circuit_name": self.circuit_display_name(),
             "splitter_sizes": self._splitter.sizes(),
             "simulation_mode": self._sim_mode.currentText(),
             "eye_span_ui": self._selected_eye_span_ui(),
@@ -2993,6 +3269,19 @@ class CircuitWindow(QMainWindow):
             item for item in document.external_ports if item.port_ref.instance_id in valid_instance_ids
         ]
         self._document = document
+
+        saved_name = str(state.get("circuit_name", "")).strip()
+        if not saved_name:
+            raw_title = str(state.get("window_title", "")).strip()
+            if " - " in raw_title:
+                saved_name = raw_title.split(" - ", 1)[1].strip()
+        if not saved_name:
+            saved_name = f"Circuit #{self.window_number}"
+        self._circuit_name = saved_name
+        self._circuit_name_edit.blockSignals(True)
+        self._circuit_name_edit.setText(saved_name)
+        self._circuit_name_edit.blockSignals(False)
+        self._refresh_window_title()
 
         self._scene.clear()
         self._scene._block_items.clear()
@@ -3115,6 +3404,7 @@ class CircuitWindow(QMainWindow):
         self._pending_output_port_instance_id = state.get("drv_output_port_instance_id")
         if self._pending_output_port_instance_id is not None:
             self._refresh_output_port_list()
+        self._sync_eye_window_titles()
 
     def _export_equivalent_touchstone(self) -> None:
         format_choices = ["RI", "MA", "DB"]
@@ -3180,6 +3470,15 @@ class CircuitWindow(QMainWindow):
             return
 
         self._status_label.setText(f"Equivalent Touchstone exported to {path}. {self._describe_passivity(result)}")
+        self.sparameter_result_generated.emit(
+            {
+                "circuit_name": self.circuit_display_name(),
+                "nports": int(result.nports),
+                "touchstone_text": text,
+                "frequency_unit": str(selected_unit),
+                "data_format": str(selected_format),
+            }
+        )
         QMessageBox.information(
             self,
             "Export completed",

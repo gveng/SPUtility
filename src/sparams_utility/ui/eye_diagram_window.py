@@ -410,18 +410,35 @@ def _compute_eye_summary(
     segment_matrix: np.ndarray,
     samples_per_ui: int,
 ) -> dict[str, float]:
-    """Compute NRZ eye summary: Level1, Level0, Height, Width.
+    """Compute NRZ eye summary using oscilloscope-style definitions.
 
-    * Level1 / Level0 – median voltage of the upper / lower cluster sampled at
-      the centre of the UI window (eye decision point).
-    * Height – vertical eye opening at the decision centre.
-    * Width  – horizontal opening of the central eye, measured as the
-                contiguous open interval around the centre, in UI.
+    Reported values:
+    * One Level / Zero Level: medians of upper/lower clusters at decision center.
+    * Eye Amplitude: One Level - Zero Level.
+    * Eye Height: vertical opening at decision center using percentile envelopes.
+    * Eye Width: contiguous open interval around center, in UI.
+    * Eye Crossing: crossing level at +/-0.5 UI, normalized to amplitude (%).
     """
     n_seg, n_samp = segment_matrix.shape
+
+    def _nan_summary() -> dict[str, float]:
+        nan = float("nan")
+        # Keep legacy aliases (level1/level0/height/width) for compatibility.
+        return {
+            "one_level": nan,
+            "zero_level": nan,
+            "eye_amplitude": nan,
+            "eye_height": nan,
+            "eye_width_ui": nan,
+            "eye_crossing_pct": nan,
+            "level1": nan,
+            "level0": nan,
+            "height": nan,
+            "width": nan,
+        }
+
     if n_seg < 4 or n_samp < 2:
-        return {"level1": float("nan"), "level0": float("nan"),
-                "height": float("nan"), "width": float("nan")}
+        return _nan_summary()
 
     # ── Vertical measurement at the UI centre ──────────────────────────────
     c_radius = max(1, samples_per_ui // 8)
@@ -437,16 +454,16 @@ def _compute_eye_summary(
     cluster0 = center_vals_sorted[:split_idx]
     cluster1 = center_vals_sorted[split_idx:]
     if cluster0.size < 2 or cluster1.size < 2:
-        return {"level1": float("nan"), "level0": float("nan"),
-                "height": float("nan"), "width": float("nan")}
+        return _nan_summary()
 
-    level1 = float(np.median(cluster1))
-    level0 = float(np.median(cluster0))
+    one_level = float(np.median(cluster1))
+    zero_level = float(np.median(cluster0))
+    eye_amplitude = one_level - zero_level
 
     # ── Horizontal measurement (eye width) ─────────────────────────────────
     # For each time sample compute the p5 (low envelope) and p95 (high envelope)
     # Eye is "open" at a column when p5 of upper cluster > p95 of lower cluster
-    threshold = (level1 + level0) / 2.0
+    threshold = (one_level + zero_level) / 2.0
     upper_mask = center_vals >= threshold
     lower_mask = ~upper_mask
 
@@ -454,8 +471,8 @@ def _compute_eye_summary(
     lower_segs = segment_matrix[lower_mask]
 
     if upper_segs.shape[0] < 2 or lower_segs.shape[0] < 2:
-        height = float("nan")
-        width = float("nan")
+        eye_height = float("nan")
+        eye_width_ui = float("nan")
     else:
         # per-column 5th/95th percentile
         p5_upper = np.percentile(upper_segs, 5.0, axis=0)
@@ -464,12 +481,12 @@ def _compute_eye_summary(
 
         # Height at decision centre (green arrow in reference figure).
         center_col = n_samp // 2
-        height = float(p5_upper[center_col] - p95_lower[center_col])
+        eye_height = float(p5_upper[center_col] - p95_lower[center_col])
 
         # Width of the central eye: contiguous open interval around centre
         # (red arrow in reference figure), expressed in UI.
         if not bool(open_cols[center_col]):
-            width = 0.0
+            eye_width_ui = 0.0
         else:
             left = center_col
             while left > 0 and bool(open_cols[left - 1]):
@@ -478,9 +495,54 @@ def _compute_eye_summary(
             while right < (n_samp - 1) and bool(open_cols[right + 1]):
                 right += 1
             open_count = right - left + 1
-            width = float(open_count) / float(max(samples_per_ui, 1))
+            eye_width_ui = float(open_count) / float(max(samples_per_ui, 1))
 
-    return {"level1": level1, "level0": level0, "height": height, "width": width}
+    eye_crossing_pct = float("nan")
+    if np.isfinite(eye_amplitude) and eye_amplitude > 0.0 and n_samp >= 3:
+        activity = _crossing_activity_profile(segment_matrix)
+        center_col = n_samp // 2
+        half_ui_samples = max(1, int(round(samples_per_ui / 2.0)))
+        search_radius = max(2, samples_per_ui // 3)
+        crossing_levels: list[float] = []
+        for target in (center_col - half_ui_samples, center_col + half_ui_samples):
+            lo = max(0, target - search_radius)
+            hi = min(n_samp, target + search_radius + 1)
+            if hi <= lo:
+                continue
+            peak = lo + int(np.argmax(activity[lo:hi]))
+
+            left_col = max(0, peak - 1)
+            right_col = min(n_samp - 1, peak + 1)
+            slope_mag = np.abs(segment_matrix[:, right_col] - segment_matrix[:, left_col])
+            q = float(np.percentile(slope_mag, 75.0))
+            transition_mask = slope_mag >= q
+            if int(np.count_nonzero(transition_mask)) < 4:
+                transition_mask = slope_mag > 0.0
+            values = segment_matrix[transition_mask, peak]
+            if values.size == 0:
+                values = segment_matrix[:, peak]
+            crossing_levels.append(float(np.median(values)))
+
+        if crossing_levels:
+            crossing_level_v = float(np.mean(crossing_levels))
+            eye_crossing_pct = float(np.clip(
+                100.0 * (crossing_level_v - zero_level) / eye_amplitude,
+                0.0,
+                100.0,
+            ))
+
+    return {
+        "one_level": one_level,
+        "zero_level": zero_level,
+        "eye_amplitude": eye_amplitude,
+        "eye_height": eye_height,
+        "eye_width_ui": eye_width_ui,
+        "eye_crossing_pct": eye_crossing_pct,
+        "level1": one_level,
+        "level0": zero_level,
+        "height": eye_height,
+        "width": eye_width_ui,
+    }
 
 
 def _eye_opening_profile(segment_matrix: np.ndarray) -> np.ndarray:
@@ -515,6 +577,60 @@ def _best_opening_index_near_center(opening: np.ndarray) -> int:
         return int(np.argmax(opening))
     nearest = int(candidates[np.argmin(np.abs(candidates - center))])
     return nearest
+
+
+def _crossing_activity_profile(segment_matrix: np.ndarray) -> np.ndarray:
+    """Return per-column transition activity used to locate crossing points.
+
+    High values indicate columns where many traces change quickly in voltage,
+    which corresponds to eye crossings for NRZ/PAM signals.
+    """
+    n_seg, n_samp = segment_matrix.shape
+    if n_seg < 2 or n_samp < 3:
+        return np.zeros(n_samp, dtype=float)
+
+    slope = np.abs(np.diff(segment_matrix, axis=1))
+    activity = np.zeros(n_samp, dtype=float)
+    activity[1:] = np.mean(slope, axis=0)
+    return activity
+
+
+def _estimate_crossing_phase_shift_samples(
+    segment_matrix: np.ndarray,
+    samples_per_ui: int,
+    span_ui: int,
+) -> int:
+    """Estimate sample shift so crossings land at +/-0.5 UI for 2-UI span."""
+    if span_ui != 2 or samples_per_ui <= 1:
+        return 0
+
+    activity = _crossing_activity_profile(segment_matrix)
+    if activity.size < 3 or not np.isfinite(activity).any():
+        return 0
+
+    center_idx = activity.size // 2
+    half_ui_samples = max(1, int(round(samples_per_ui / 2.0)))
+    target_left = center_idx - half_ui_samples
+    target_right = center_idx + half_ui_samples
+
+    search_radius = max(2, samples_per_ui // 3)
+
+    left_lo = max(0, target_left - search_radius)
+    left_hi = min(activity.size, target_left + search_radius + 1)
+    right_lo = max(0, target_right - search_radius)
+    right_hi = min(activity.size, target_right + search_radius + 1)
+    if left_hi <= left_lo or right_hi <= right_lo:
+        return 0
+
+    left_peak = left_lo + int(np.argmax(activity[left_lo:left_hi]))
+    right_peak = right_lo + int(np.argmax(activity[right_lo:right_hi]))
+
+    left_err = left_peak - target_left
+    right_err = right_peak - target_right
+    shift = int(round((left_err + right_err) / 2.0))
+
+    max_shift = max(1, samples_per_ui // 2)
+    return int(np.clip(shift, -max_shift, max_shift))
 
 
 class EyeDiagramWindow(QMainWindow):
@@ -634,11 +750,42 @@ class EyeDiagramWindow(QMainWindow):
         """Return last-computed eye summary.
 
         Keys:
-        - level1, level0, height: volts
-        - width: UI
-        - width_ps: picoseconds
+        - one_level, zero_level, eye_amplitude, eye_height: volts
+        - eye_width_ui: UI
+        - eye_width_ps, bit_period_ps: picoseconds
+        - eye_crossing_pct: percent
+
+        Legacy aliases are kept for compatibility:
+        - level1, level0, height, width, width_ps
         """
         return dict(self._eye_summary)
+
+    def export_report_state(self) -> dict[str, object]:
+        """Return eye diagram settings and measurements for report export."""
+        spec = self._result.driver_spec
+        return {
+            "window_title": self.windowTitle(),
+            "mode": "Differential" if self._result.is_differential else "Single-ended",
+            "bitrate_gbps": float(spec.bitrate_gbps),
+            "encoding": str(spec.encoding),
+            "prbs_pattern": str(spec.prbs_pattern),
+            "num_bits": int(spec.num_bits),
+            "rise_time_ps": float(spec.rise_time_s) * 1e12,
+            "fall_time_ps": float(spec.fall_time_s) * 1e12,
+            "voltage_high_v": float(spec.voltage_high_v),
+            "voltage_low_v": float(spec.voltage_low_v),
+            "eye_span_ui": int(self._eye_span_ui),
+            "render_mode": str(self._render_mode),
+            "quality_preset": str(self._quality_preset),
+            "statistical_enabled": bool(self._statistical_enabled),
+            "noise_rms_mv": float(self._noise_rms_mv),
+            "jitter_rms_ps": float(self._jitter_rms_ps),
+            "measurements": dict(self._eye_summary),
+        }
+
+    def grab_eye_plot_pixmap(self):
+        """Return a snapshot of the eye plot area."""
+        return self._plot_widget.grab()
 
     def _on_eye_span_changed(self, index: int) -> None:
         span_ui = self._eye_span_combo.itemData(index)
@@ -738,11 +885,12 @@ class EyeDiagramWindow(QMainWindow):
             self._plot_widget.setTitle("Eye Diagram (insufficient data)")
             return
 
-        # Center decision region on maximum eye opening.
-        opening_profile = _eye_opening_profile(segment_matrix)
-        opening_idx = _best_opening_index_near_center(opening_profile)
-        center_idx = overlay_samples // 2
-        phase_shift_samples = opening_idx - center_idx
+        # Align crossings around -0.5 UI and +0.5 UI for the 2-UI display.
+        phase_shift_samples = _estimate_crossing_phase_shift_samples(
+            segment_matrix,
+            samples_per_ui,
+            self._eye_span_ui,
+        )
         if phase_shift_samples != 0:
             start_sample = max(margin, min(start_sample + phase_shift_samples, end_sample - overlay_samples))
             segment_matrix, traces_drawn = _collect_segments(start_sample)
@@ -813,19 +961,25 @@ class EyeDiagramWindow(QMainWindow):
 
         # ── Eye summary ────────────────────────────────────────────────────
         summary = _compute_eye_summary(segment_matrix, samples_per_ui)
-        width_ui = summary.get("width", float("nan"))
-        width_ps = (
-            float(width_ui) * float(ui_s) * 1e12
-            if np.isfinite(width_ui)
+        eye_width_ui = summary.get("eye_width_ui", float("nan"))
+        eye_width_ps = (
+            float(eye_width_ui) * float(ui_s) * 1e12
+            if np.isfinite(eye_width_ui)
             else float("nan")
         )
         summary_out = dict(summary)
-        summary_out["width_ps"] = width_ps
+        summary_out["eye_width_ps"] = eye_width_ps
+        summary_out["bit_period_ps"] = float(ui_s) * 1e12
+        # Legacy alias
+        summary_out["width_ps"] = eye_width_ps
         self._eye_summary = summary_out
-        lv1 = summary["level1"]
-        lv0 = summary["level0"]
-        ht = summary["height"]
-        wd_ps = width_ps
+        one = summary["one_level"]
+        zero = summary["zero_level"]
+        amp = summary["eye_amplitude"]
+        ht = summary["eye_height"]
+        wd_ps = eye_width_ps
+        cross = summary["eye_crossing_pct"]
+        bit_period_ps = float(ui_s) * 1e12
 
         def _fmt_v(v: float) -> str:
             if not np.isfinite(v):
@@ -840,10 +994,16 @@ class EyeDiagramWindow(QMainWindow):
         def _fmt_ps(v: float) -> str:
             return "n/a" if not np.isfinite(v) else f"{v:.2f} ps"
 
+        def _fmt_pct(v: float) -> str:
+            return "n/a" if not np.isfinite(v) else f"{v:.2f} %"
+
         self._summary_label.setText(
             "MEASUREMENTS  |  "
-            f"Level1: {_fmt_mv(lv1)}  |  "
-            f"Level0: {_fmt_mv(lv0)}  |  "
+            f"One: {_fmt_mv(one)}  |  "
+            f"Zero: {_fmt_mv(zero)}  |  "
+            f"Amp: {_fmt_mv(amp)}  |  "
             f"Height: {_fmt_mv(ht)}  |  "
-            f"Width: {_fmt_ps(wd_ps)}"
+            f"Width: {_fmt_ps(wd_ps)}  |  "
+            f"Cross: {_fmt_pct(cross)}  |  "
+            f"Bit Period: {_fmt_ps(bit_period_ps)}"
         )

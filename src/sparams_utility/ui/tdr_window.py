@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QSplitter,
     QTableWidget,
@@ -49,7 +50,8 @@ class TdrWindow(QMainWindow):
     def __init__(self, state: AppState, parent=None, window_number: int = 1) -> None:
         super().__init__(parent)
         self.window_number = window_number
-        self.setWindowTitle(f"TDR Plots #{window_number}")
+        self._tdr_name = f"TDR #{window_number}"
+        self._refresh_window_title()
         self.resize(1250, 800)
         app = QApplication.instance()
         if app is not None:
@@ -137,7 +139,13 @@ class TdrWindow(QMainWindow):
         self._window_combo.setCurrentText("Hann")
         self._window_combo.currentTextChanged.connect(self._on_tdr_param_changed)
 
+        self._tdr_name_edit = QLineEdit(self._tdr_name)
+        self._tdr_name_edit.textChanged.connect(self._on_tdr_name_changed)
+
         controls_row = QHBoxLayout()
+        controls_row.addWidget(QLabel("Plot name:"))
+        controls_row.addWidget(self._tdr_name_edit)
+        controls_row.addSpacing(8)
         controls_row.addStretch(1)
         controls_row.addWidget(QLabel("Rise time:"))
         controls_row.addWidget(self._rise_time_ps)
@@ -173,6 +181,14 @@ class TdrWindow(QMainWindow):
 
         self._state.files_changed.connect(self.refresh_from_state)
         self.refresh_from_state()
+
+    def _refresh_window_title(self) -> None:
+        self.setWindowTitle(self._tdr_name.strip() or f"TDR #{self.window_number}")
+
+    def _on_tdr_name_changed(self, value: str) -> None:
+        self._tdr_name = value.strip() or f"TDR #{self.window_number}"
+        self._refresh_window_title()
+        self.project_modified.emit()
 
     def refresh_from_state(self) -> None:
         loaded_files = self._state.get_loaded_files()
@@ -307,6 +323,19 @@ class TdrWindow(QMainWindow):
         self._set_legend_offset(self._legend_offset)
 
     def apply_project_state(self, state: dict) -> None:
+        tdr_name = str(state.get("tdr_name", "")).strip()
+        if not tdr_name:
+            title = str(state.get("window_title", "")).strip()
+            if title:
+                tdr_name = title
+        if not tdr_name:
+            tdr_name = f"TDR #{self.window_number}"
+        self._tdr_name = tdr_name
+        self._tdr_name_edit.blockSignals(True)
+        self._tdr_name_edit.setText(tdr_name)
+        self._tdr_name_edit.blockSignals(False)
+        self._refresh_window_title()
+
         loaded_by_path = {
             str(item.path.resolve()): item.file_id
             for item in self._state.get_loaded_files()
@@ -397,6 +426,7 @@ class TdrWindow(QMainWindow):
 
         return {
             "window_title": self.windowTitle(),
+            "tdr_name": self._tdr_name,
             "tdr_settings": {
                 "rise_time_ps": float(self._rise_time_ps.value()),
                 "zero_before_front_ns": float(self._zero_before_front_ns.value()),
