@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from importlib import resources
 from io import BytesIO
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
+from weakref import ref
 
 import numpy as np
 
@@ -19,6 +22,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMdiArea,
     QMdiSubWindow,
+    QMenu,
     QMessageBox,
     QScrollArea,
     QSplitter,
@@ -82,6 +86,8 @@ class MainWindow(QMainWindow):
         self._project_tree.setHeaderHidden(True)
         self._project_tree.setMinimumWidth(220)
         self._project_tree.itemClicked.connect(self._on_project_tree_item_clicked)
+        self._project_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._project_tree.customContextMenuRequested.connect(self._on_project_tree_context_menu)
 
         tree_panel = QWidget()
         tree_layout = QVBoxLayout(tree_panel)
@@ -103,6 +109,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction("Open Project", self._open_project)
         file_menu.addAction("Save Project", self._save_project)
         file_menu.addAction("Save Project As", self._save_project_as)
+        file_menu.addAction("Export Project", self._export_project)
         file_menu.addAction("Open File", self._open_files)
         self._recent_projects_menu = file_menu.addMenu("Recent Projects")
         self._recent_sparams_menu = file_menu.addMenu("Recent S-Parameters")
@@ -168,71 +175,47 @@ class MainWindow(QMainWindow):
 
     def _icon_for_kind(self, kind: str):
         style = self.style()
+
+        def _load_custom_icon(resource_name: str):
+            try:
+                import importlib.resources as pkg_resources
+                from PySide6.QtGui import QIcon
+                import sparams_utility.resources
+
+                resource = pkg_resources.files(sparams_utility.resources).joinpath(resource_name)
+                with pkg_resources.as_file(resource) as path:
+                    icon = QIcon(str(path))
+                    if not icon.isNull():
+                        return icon
+            except Exception:
+                pass
+            return None
+
         if kind == "tdr":
             return style.standardIcon(QStyle.SP_DriveNetIcon)
         if kind == "circuit":
-            # Try to load the custom circuit icon from resources
-            try:
-                import importlib.resources as pkg_resources
-                from PySide6.QtGui import QIcon, QPixmap
-                import sparams_utility.resources
-                with pkg_resources.files(sparams_utility.resources).joinpath("circuit_icon.png").open("rb") as f:
-                    data = f.read()
-                    pixmap = QPixmap()
-                    pixmap.loadFromData(data)
-                    if not pixmap.isNull():
-                        return QIcon(pixmap)
-            except Exception:
-                pass
+            icon = _load_custom_icon("circuit_icon.svg")
+            if icon is not None:
+                return icon
             # Fallback to default directory icon
             return style.standardIcon(QStyle.SP_DirIcon)
         if kind == "eye-file":
-            # Try to load the custom eye icon from resources
-            try:
-                import importlib.resources as pkg_resources
-                from PySide6.QtGui import QIcon, QPixmap
-                import sparams_utility.resources
-                with pkg_resources.files(sparams_utility.resources).joinpath("eye_icon.png").open("rb") as f:
-                    data = f.read()
-                    pixmap = QPixmap()
-                    pixmap.loadFromData(data)
-                    if not pixmap.isNull():
-                        return QIcon(pixmap)
-            except Exception:
-                pass
+            icon = _load_custom_icon("eye_icon.svg")
+            if icon is not None:
+                return icon
             # Fallback to default detailed view icon
             return style.standardIcon(QStyle.SP_FileDialogDetailedView)
+        if kind in {"sp", "sparam-file", "touchstone-file"}:
+            icon = _load_custom_icon("cosine_wave.svg")
+            if icon is not None:
+                return icon
         if kind == "sp":
-            # Try to load the custom SP plot-window icon from resources
-            try:
-                import importlib.resources as pkg_resources
-                from PySide6.QtGui import QIcon, QPixmap
-                import sparams_utility.resources
-                with pkg_resources.files(sparams_utility.resources).joinpath("SP_Plot.png").open("rb") as f:
-                    data = f.read()
-                    pixmap = QPixmap()
-                    pixmap.loadFromData(data)
-                    if not pixmap.isNull():
-                        return QIcon(pixmap)
-            except Exception:
-                pass
             return style.standardIcon(QStyle.SP_ComputerIcon)
         if kind == "sparam-file":
-            # Try to load the custom s-parameter icon from resources
-            try:
-                import importlib.resources as pkg_resources
-                from PySide6.QtGui import QIcon, QPixmap
-                import sparams_utility.resources
-                with pkg_resources.files(sparams_utility.resources).joinpath("sparam_icon.png").open("rb") as f:
-                    data = f.read()
-                    pixmap = QPixmap()
-                    pixmap.loadFromData(data)
-                    if not pixmap.isNull():
-                        return QIcon(pixmap)
-            except Exception:
-                pass
             # Fallback to default file link icon
             return style.standardIcon(QStyle.SP_FileLinkIcon)
+        if kind == "touchstone-file":
+            return style.standardIcon(QStyle.SP_FileIcon)
         return style.standardIcon(QStyle.SP_FileIcon)
 
     def _new_entry_id(self, kind: str) -> str:
@@ -279,6 +262,8 @@ class MainWindow(QMainWindow):
             widget.project_modified.connect(
                 lambda k=kind, eid=entry_id, w=widget: self._sync_window_entry(k, eid, w)
             )
+        if isinstance(widget, PlotWindow):
+            widget.unload_file_requested.connect(self._unload_file)
         if isinstance(widget, CircuitWindow):
             widget.eye_result_generated.connect(
                 lambda payload, eid=entry_id: self._on_circuit_eye_result_generated(eid, payload)
@@ -286,7 +271,24 @@ class MainWindow(QMainWindow):
             widget.sparameter_result_generated.connect(
                 lambda payload, eid=entry_id: self._on_circuit_sparameter_result_generated(eid, payload)
             )
-        sub.destroyed.connect(lambda *_: self._on_window_closed(kind, entry_id))
+        owner_ref = ref(self)
+        sub.destroyed.connect(
+            lambda *_, owner_ref=owner_ref, kind=kind, entry_id=entry_id: MainWindow._on_window_closed_safe(
+                owner_ref,
+                kind,
+                entry_id,
+            )
+        )
+
+    @staticmethod
+    def _on_window_closed_safe(owner_ref, kind: str, entry_id: str) -> None:
+        owner = owner_ref()
+        if owner is None:
+            return
+        try:
+            owner._on_window_closed(kind, entry_id)
+        except RuntimeError:
+            return
 
     def _ensure_data_dir_for_runtime_exports(self) -> Path | None:
         if self._project_data_dir is not None:
@@ -544,6 +546,537 @@ class MainWindow(QMainWindow):
 
         project_item.setExpanded(True)
 
+    def _on_project_tree_context_menu(self, pos) -> None:
+        item = self._project_tree.itemAt(pos)
+        if item is None:
+            return
+
+        payload = item.data(0, Qt.UserRole)
+        if not isinstance(payload, dict):
+            return
+
+        action = str(payload.get("action", ""))
+        if action not in {"window", "output-file"}:
+            return
+
+        self._project_tree.setCurrentItem(item)
+
+        menu = QMenu(self)
+        open_action = menu.addAction("Open")
+        duplicate_action = None
+        if self._tree_payload_can_duplicate(payload):
+            duplicate_action = menu.addAction("Duplicate")
+        close_action = menu.addAction("Close")
+        minimize_action = menu.addAction("Minimize")
+        menu.addSeparator()
+        delete_action = menu.addAction("Delete")
+
+        is_open = self._tree_payload_is_open(payload)
+        close_action.setEnabled(is_open)
+        minimize_action.setEnabled(is_open)
+
+        chosen = menu.exec(self._project_tree.viewport().mapToGlobal(pos))
+        if chosen is open_action:
+            self._open_tree_payload(payload)
+            return
+        if duplicate_action is not None and chosen is duplicate_action:
+            self._duplicate_tree_payload(payload)
+            return
+        if chosen is close_action:
+            self._close_tree_payload(payload)
+            return
+        if chosen is minimize_action:
+            self._minimize_tree_payload(payload)
+            return
+        if chosen is delete_action:
+            self._confirm_and_delete_tree_payload(item, payload)
+
+    def _open_tree_payload(self, payload: dict) -> None:
+        action = str(payload.get("action", ""))
+        if action == "window":
+            self._activate_or_open_window_entry(
+                str(payload.get("kind", "")),
+                str(payload.get("id", "")),
+            )
+            return
+        if action == "output-file":
+            self._open_output_file_from_tree(
+                str(payload.get("file", "")),
+                str(payload.get("output", "")),
+            )
+
+    def _tree_payload_can_duplicate(self, payload: dict) -> bool:
+        action = str(payload.get("action", ""))
+        if action == "window":
+            return str(payload.get("kind", "")) in {"sp", "tdr", "circuit"}
+        if action == "output-file":
+            return str(payload.get("output", "")) == "eye"
+        return False
+
+    def _duplicate_tree_payload(self, payload: dict) -> bool:
+        action = str(payload.get("action", ""))
+        if action == "window":
+            return self._duplicate_tree_window_entry(
+                str(payload.get("kind", "")),
+                str(payload.get("id", "")),
+            )
+        if action == "output-file":
+            return self._duplicate_tree_output_file(
+                str(payload.get("file", "")),
+                str(payload.get("output", "")),
+            )
+        return False
+
+    def _duplicate_tree_window_entry(self, kind: str, entry_id: str) -> bool:
+        entry = self._window_registry.get(kind, {}).get(entry_id)
+        if entry is None:
+            return False
+
+        source_widget = self._open_windows.get((kind, entry_id))
+        state = {}
+        if source_widget is not None:
+            state = deepcopy(self._snapshot_widget_state(source_widget))
+        elif isinstance(entry.get("state"), dict):
+            state = deepcopy(entry["state"])
+
+        required_paths = self._touchstone_paths_for_window_state(kind, state)
+        if not self._ensure_touchstone_files_loaded(required_paths, kind=kind):
+            return False
+
+        source_size = self._window_size_for_duplicate(entry, source_widget)
+
+        if kind == "sp":
+            return self._open_duplicated_plot_window(state, source_size)
+        if kind == "tdr":
+            return self._open_duplicated_tdr_window(state, source_size)
+        if kind == "circuit":
+            return self._open_duplicated_circuit_window(state, source_size)
+        return False
+
+    def _touchstone_paths_for_window_state(self, kind: str, state: dict) -> list[str]:
+        paths: list[str] = []
+        seen: set[str] = set()
+
+        if kind in {"sp", "tdr"}:
+            for file_entry in state.get("files", []):
+                if not isinstance(file_entry, dict):
+                    continue
+                raw_path = str(file_entry.get("file_path") or "").strip()
+                if not raw_path:
+                    continue
+                try:
+                    normalized = str(Path(raw_path).resolve())
+                except OSError:
+                    normalized = raw_path
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                paths.append(normalized)
+            return paths
+
+        if kind == "circuit":
+            for instance in state.get("instances", []):
+                if not isinstance(instance, dict):
+                    continue
+                if str(instance.get("block_kind", "touchstone")) != "touchstone":
+                    continue
+                raw_path = str(instance.get("source_file_id") or "").strip()
+                if not raw_path:
+                    continue
+                try:
+                    normalized = str(Path(raw_path).resolve())
+                except OSError:
+                    normalized = raw_path
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                paths.append(normalized)
+
+        return paths
+
+    def _ensure_touchstone_files_loaded(self, paths: list[str], *, kind: str) -> bool:
+        requested = [path for path in paths if path]
+        if not requested:
+            return True
+
+        _added, errors = self._state.load_files(requested)
+        loaded_paths = {str(item.path.resolve()) for item in self._state.get_loaded_files()}
+        missing = [path for path in requested if path not in loaded_paths]
+        if not errors and not missing:
+            return True
+
+        details = errors[:]
+        details.extend(f"{Path(path).name}: file not available" for path in missing)
+        kind_label = {
+            "sp": "plot",
+            "tdr": "TDR plot",
+            "circuit": "circuit",
+        }.get(kind, "item")
+        QMessageBox.warning(
+            self,
+            "Duplicate item",
+            f"Could not duplicate this {kind_label} because some Touchstone files could not be loaded:\n\n" + "\n".join(details),
+        )
+        return False
+
+    def _window_size_for_duplicate(self, entry: dict, widget: object | None) -> list[int] | None:
+        if widget is not None:
+            parent = widget.parentWidget() if hasattr(widget, "parentWidget") else None
+            if isinstance(parent, QMdiSubWindow):
+                return [parent.width(), parent.height()]
+        window_size = entry.get("window_size")
+        if isinstance(window_size, list) and len(window_size) == 2:
+            return [int(window_size[0]), int(window_size[1])]
+        return None
+
+    def _apply_subwindow_size(
+        self,
+        sub: QMdiSubWindow,
+        window_size: list[int] | None,
+        *,
+        default_width: int,
+        default_height: int,
+    ) -> None:
+        if isinstance(window_size, list) and len(window_size) == 2:
+            sub.resize(int(window_size[0]), int(window_size[1]))
+            return
+        sub.resize(default_width, default_height)
+
+    def _copy_label(self, label: str, fallback: str) -> str:
+        base = str(label).strip() or fallback
+        return f"{base} Copy"
+
+    def _rename_duplicated_widget(self, widget: object) -> None:
+        if isinstance(widget, PlotWindow):
+            copy_name = self._copy_label(getattr(widget, "_plot_name", ""), f"Plot #{widget.window_number}")
+            widget._plot_name = copy_name
+            widget._plot_name_edit.blockSignals(True)
+            widget._plot_name_edit.setText(copy_name)
+            widget._plot_name_edit.blockSignals(False)
+            widget._refresh_window_title()
+            return
+
+        if isinstance(widget, TdrWindow):
+            copy_name = self._copy_label(getattr(widget, "_tdr_name", ""), f"TDR #{widget.window_number}")
+            widget._tdr_name = copy_name
+            widget._tdr_name_edit.blockSignals(True)
+            widget._tdr_name_edit.setText(copy_name)
+            widget._tdr_name_edit.blockSignals(False)
+            widget._refresh_window_title()
+            return
+
+        if isinstance(widget, CircuitWindow):
+            copy_name = self._copy_label(widget.circuit_display_name(), f"Circuit #{widget.window_number}")
+            widget._circuit_name = copy_name
+            widget._circuit_name_edit.blockSignals(True)
+            widget._circuit_name_edit.setText(copy_name)
+            widget._circuit_name_edit.blockSignals(False)
+            widget._refresh_window_title()
+            widget._sync_eye_window_titles()
+
+    def _open_duplicated_plot_window(self, state: dict, window_size: list[int] | None) -> bool:
+        self._plot_counter += 1
+        plot_win = PlotWindow(self._state, window_number=self._plot_counter)
+        plot_win.apply_project_state(state)
+        self._rename_duplicated_widget(plot_win)
+        plot_win.project_modified.connect(self._mark_project_dirty)
+
+        sub = self._mdi.addSubWindow(plot_win)
+        self._apply_subwindow_size(sub, window_size, default_width=1200, default_height=720)
+        plot_win.show()
+        entry_id = self._register_window_entry("sp", plot_win)
+        self._bind_open_window("sp", entry_id, plot_win, sub)
+        self._mdi.setActiveSubWindow(sub)
+        self._mark_project_dirty()
+        self._refresh_project_tree()
+        return True
+
+    def _open_duplicated_tdr_window(self, state: dict, window_size: list[int] | None) -> bool:
+        self._tdr_counter += 1
+        tdr_win = TdrWindow(self._state, window_number=self._tdr_counter)
+        tdr_win.apply_project_state(state)
+        self._rename_duplicated_widget(tdr_win)
+        tdr_win.project_modified.connect(self._mark_project_dirty)
+
+        sub = self._mdi.addSubWindow(tdr_win)
+        self._apply_subwindow_size(sub, window_size, default_width=1200, default_height=720)
+        tdr_win.show()
+        entry_id = self._register_window_entry("tdr", tdr_win)
+        self._bind_open_window("tdr", entry_id, tdr_win, sub)
+        self._mdi.setActiveSubWindow(sub)
+        self._mark_project_dirty()
+        self._refresh_project_tree()
+        return True
+
+    def _open_duplicated_circuit_window(self, state: dict, window_size: list[int] | None) -> bool:
+        circuit_number = self._next_available_circuit_number()
+        self._circuit_counter = max(self._circuit_counter, circuit_number)
+        circuit_win = CircuitWindow(self._state, window_number=circuit_number)
+        circuit_win.apply_project_state(state)
+        self._rename_duplicated_widget(circuit_win)
+        circuit_win.project_modified.connect(self._mark_project_dirty)
+
+        sub = self._mdi.addSubWindow(circuit_win)
+        self._apply_subwindow_size(sub, window_size, default_width=1280, default_height=760)
+        circuit_win.show()
+        entry_id = self._register_window_entry("circuit", circuit_win)
+        self._bind_open_window("circuit", entry_id, circuit_win, sub)
+        self._mdi.setActiveSubWindow(sub)
+        self._mark_project_dirty()
+        self._refresh_project_tree()
+        return True
+
+    def _duplicate_tree_output_file(self, file_name: str, output_kind: str) -> bool:
+        if output_kind != "eye" or not file_name:
+            return False
+        if self._project_data_dir is None:
+            QMessageBox.information(self, "Duplicate item", "Project data folder is not available.")
+            return False
+
+        output_path = self._project_data_dir / file_name
+        if not output_path.exists():
+            QMessageBox.warning(self, "Duplicate item", f"Output file not found:\n{output_path}")
+            return False
+
+        source_window = next(
+            (
+                target
+                for target in self._find_output_targets(file_name, output_kind)
+                if isinstance(target, EyeDiagramWindow)
+            ),
+            None,
+        )
+        if isinstance(source_window, EyeDiagramWindow):
+            duplicated = self._show_eye_diagram_window(
+                source_window._result,
+                title=self._copy_label(source_window.windowTitle(), output_path.stem),
+                eye_span_ui=int(source_window._eye_span_ui),
+                render_mode=str(source_window._render_mode),
+                quality_preset=str(source_window._quality_preset),
+                statistical_enabled=bool(source_window._statistical_enabled),
+                noise_rms_mv=float(source_window._noise_rms_mv),
+                jitter_rms_ps=float(source_window._jitter_rms_ps),
+                output_file_name=file_name,
+            )
+            return duplicated is not None
+
+        duplicated = self._open_eye_binary_file(
+            output_path,
+            title_override=self._copy_label(self._tree_display_name(file_name), output_path.stem),
+        )
+        return duplicated is not None
+
+    def _tree_payload_is_open(self, payload: dict) -> bool:
+        action = str(payload.get("action", ""))
+        if action == "window":
+            return self._find_open_window_subwindow(
+                str(payload.get("kind", "")),
+                str(payload.get("id", "")),
+            ) is not None
+        if action == "output-file":
+            return bool(
+                self._find_output_targets(
+                    str(payload.get("file", "")),
+                    str(payload.get("output", "")),
+                )
+            )
+        return False
+
+    def _find_open_window_subwindow(self, kind: str, entry_id: str) -> QMdiSubWindow | None:
+        open_widget = self._open_windows.get((kind, entry_id))
+        if open_widget is None:
+            return None
+        for sub in self._mdi.subWindowList():
+            if sub.widget() is open_widget:
+                return sub
+        return None
+
+    def _find_output_targets(self, file_name: str, output_kind: str) -> list[QWidget]:
+        if not file_name or not output_kind:
+            return []
+
+        matches: list[QWidget] = []
+        seen_ids: set[int] = set()
+        for sub in self._mdi.subWindowList():
+            if (
+                str(sub.property("tree_output_file") or "") == file_name
+                and str(sub.property("tree_output_kind") or "") == output_kind
+            ):
+                matches.append(sub)
+                seen_ids.add(id(sub))
+
+        for widget in self.findChildren(QWidget):
+            if id(widget) in seen_ids:
+                continue
+            if (
+                str(widget.property("tree_output_file") or "") == file_name
+                and str(widget.property("tree_output_kind") or "") == output_kind
+            ):
+                matches.append(widget)
+                seen_ids.add(id(widget))
+
+        return matches
+
+    def _close_tree_payload(self, payload: dict) -> bool:
+        action = str(payload.get("action", ""))
+        if action == "window":
+            sub = self._find_open_window_subwindow(
+                str(payload.get("kind", "")),
+                str(payload.get("id", "")),
+            )
+            if sub is None:
+                return False
+            return bool(sub.close())
+
+        if action == "output-file":
+            closed_any = False
+            for target in self._find_output_targets(
+                str(payload.get("file", "")),
+                str(payload.get("output", "")),
+            ):
+                target.close()
+                closed_any = True
+            return closed_any
+
+        return False
+
+    def _minimize_tree_payload(self, payload: dict) -> bool:
+        action = str(payload.get("action", ""))
+        if action == "window":
+            sub = self._find_open_window_subwindow(
+                str(payload.get("kind", "")),
+                str(payload.get("id", "")),
+            )
+            if sub is None:
+                return False
+            sub.showMinimized()
+            return True
+
+        if action == "output-file":
+            minimized_any = False
+            for target in self._find_output_targets(
+                str(payload.get("file", "")),
+                str(payload.get("output", "")),
+            ):
+                target.showMinimized()
+                minimized_any = True
+            return minimized_any
+
+        return False
+
+    def _confirm_and_delete_tree_payload(self, item: QTreeWidgetItem, payload: dict) -> None:
+        label = item.text(0).strip() or "selected item"
+        action = str(payload.get("action", ""))
+        detail = "This action cannot be undone."
+        if action == "window":
+            detail = "This will remove the item from the project tree."
+            if str(payload.get("kind", "")) == "circuit":
+                detail = "This will remove the circuit from the project tree and delete any saved Eye and S-parameter output files associated with it."
+        elif action == "output-file":
+            detail = "This will delete the saved output file from disk and remove it from the project tree."
+
+        result = QMessageBox.question(
+            self,
+            "Delete item",
+            f"Delete '{label}'?\n\n{detail}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if result != QMessageBox.Yes:
+            return
+
+        self._delete_tree_payload(payload)
+
+    def _delete_tree_payload(self, payload: dict) -> bool:
+        action = str(payload.get("action", ""))
+        if action == "window":
+            return self._delete_tree_window_entry(
+                str(payload.get("kind", "")),
+                str(payload.get("id", "")),
+            )
+        if action == "output-file":
+            return self._delete_tree_output_file(
+                str(payload.get("kind", "")),
+                str(payload.get("id", "")),
+                str(payload.get("file", "")),
+                str(payload.get("output", "")),
+            )
+        return False
+
+    def _delete_tree_window_entry(self, kind: str, entry_id: str) -> bool:
+        entry = self._window_registry.get(kind, {}).get(entry_id)
+        if entry is None:
+            return False
+
+        sub = self._find_open_window_subwindow(kind, entry_id)
+        if sub is not None and not sub.close():
+            return False
+
+        if kind == "circuit":
+            eye_file = str(entry.get("eye_file") or "").strip()
+            sparam_file = str(entry.get("sparam_file") or "").strip()
+            sparam_plot_file = str(entry.get("sparam_plot_file") or "").strip()
+
+            if eye_file:
+                self._close_output_targets(eye_file, "eye")
+                self._delete_runtime_file(eye_file)
+            if sparam_plot_file:
+                self._close_output_targets(sparam_plot_file, "sparam-plot")
+                self._delete_runtime_file(sparam_plot_file)
+            if sparam_file:
+                self._delete_runtime_file(sparam_file)
+
+        self._open_windows.pop((kind, entry_id), None)
+        self._window_registry.get(kind, {}).pop(entry_id, None)
+        self._mark_project_dirty()
+        self._refresh_project_tree()
+        return True
+
+    def _close_output_targets(self, file_name: str, output_kind: str) -> bool:
+        closed_any = False
+        for target in self._find_output_targets(file_name, output_kind):
+            target.close()
+            closed_any = True
+        return closed_any
+
+    def _delete_tree_output_file(self, kind: str, entry_id: str, file_name: str, output_kind: str) -> bool:
+        entry = self._window_registry.get(kind, {}).get(entry_id)
+        if entry is None or not file_name:
+            return False
+
+        self._close_output_targets(file_name, output_kind)
+        self._delete_runtime_file(file_name)
+
+        if output_kind == "eye":
+            entry["eye_file"] = None
+        elif output_kind == "sparam-plot":
+            entry["sparam_plot_file"] = None
+
+        if not any(str(entry.get(key) or "").strip() for key in ("eye_file", "sparam_file", "sparam_plot_file")):
+            entry["output_kind"] = None
+
+        self._mark_project_dirty()
+        self._refresh_project_tree()
+        return True
+
+    def _delete_runtime_file(self, file_name: str) -> bool:
+        if not file_name:
+            return False
+
+        data_dir = self._ensure_data_dir_for_runtime_exports()
+        if data_dir is None:
+            return False
+
+        file_path = data_dir / file_name
+        if not file_path.exists():
+            return False
+
+        try:
+            file_path.unlink()
+        except OSError:
+            return False
+        return True
+
     def _on_project_tree_item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         payload = item.data(0, Qt.UserRole)
         if not isinstance(payload, dict):
@@ -655,11 +1188,13 @@ class MainWindow(QMainWindow):
             scroll.setWidgetResizable(True)
             sub = self._mdi.addSubWindow(scroll)
             sub.setWindowTitle(file_name)
+            sub.setProperty("tree_output_file", file_name)
+            sub.setProperty("tree_output_kind", output_kind)
             sub.resize(980, 620)
             scroll.show()
             self._mdi.setActiveSubWindow(sub)
 
-    def _open_eye_binary_file(self, file_path: Path) -> None:
+    def _load_eye_binary_snapshot(self, file_path: Path) -> tuple[ChannelSimResult, dict[str, object]] | None:
         try:
             with np.load(file_path, allow_pickle=False) as data:
                 time_s = np.array(data["time_s"], dtype=float)
@@ -676,7 +1211,7 @@ class MainWindow(QMainWindow):
                 jitter_rms_ps = float(np.asarray(data["jitter_rms_ps"]).reshape(-1)[0])
         except Exception as exc:
             QMessageBox.warning(self, "Eye file", f"Could not load eye binary:\n{exc}")
-            return
+            return None
 
         result = ChannelSimResult(
             time_s=time_s,
@@ -685,18 +1220,62 @@ class MainWindow(QMainWindow):
             driver_spec=DriverSpec.from_dict(spec_payload),
             is_differential=is_diff,
         )
+        return result, {
+            "eye_span_ui": eye_span_ui,
+            "render_mode": render_mode,
+            "quality_preset": quality_preset,
+            "statistical_enabled": stat_enabled,
+            "noise_rms_mv": noise_rms_mv,
+            "jitter_rms_ps": jitter_rms_ps,
+        }
+
+    def _show_eye_diagram_window(
+        self,
+        result: ChannelSimResult,
+        *,
+        title: str,
+        eye_span_ui: int,
+        render_mode: str,
+        quality_preset: str,
+        statistical_enabled: bool,
+        noise_rms_mv: float,
+        jitter_rms_ps: float,
+        output_file_name: str | None = None,
+    ) -> EyeDiagramWindow:
         eye_win = EyeDiagramWindow(
             result,
-            title=file_path.stem,
+            title=title,
             parent=self,
             initial_span_ui=eye_span_ui,
             initial_render_mode=render_mode,
             initial_quality_preset=quality_preset,
-            statistical_enabled=stat_enabled,
+            statistical_enabled=statistical_enabled,
             noise_rms_mv=noise_rms_mv,
             jitter_rms_ps=jitter_rms_ps,
         )
+        if output_file_name:
+            eye_win.setProperty("tree_output_file", output_file_name)
+        eye_win.setProperty("tree_output_kind", "eye")
         eye_win.show()
+        return eye_win
+
+    def _open_eye_binary_file(self, file_path: Path, *, title_override: str | None = None) -> EyeDiagramWindow | None:
+        snapshot = self._load_eye_binary_snapshot(file_path)
+        if snapshot is None:
+            return None
+
+        result, settings = snapshot
+        return self._show_eye_diagram_window(
+            result,
+            title=title_override or file_path.stem,
+            eye_span_ui=int(settings["eye_span_ui"]),
+            render_mode=str(settings["render_mode"]),
+            quality_preset=str(settings["quality_preset"]),
+            statistical_enabled=bool(settings["statistical_enabled"]),
+            noise_rms_mv=float(settings["noise_rms_mv"]),
+            jitter_rms_ps=float(settings["jitter_rms_ps"]),
+            output_file_name=file_path.name,
+        )
 
     # ── File loading ──────────────────────────────────────────────────────
 
@@ -773,9 +1352,11 @@ class MainWindow(QMainWindow):
             action = self._recent_sparams_menu.addAction("No recent S-parameter files")
             action.setEnabled(False)
         else:
+            touchstone_icon = self._icon_for_kind("touchstone-file")
             for index, path in enumerate(self._recent_sparams, start=1):
                 label = f"{index}. {Path(path).name}"
                 action = self._recent_sparams_menu.addAction(label)
+                action.setIcon(touchstone_icon)
                 action.setToolTip(path)
                 action.triggered.connect(
                     lambda checked=False, p=path: self._open_recent_sparam(p)
@@ -879,6 +1460,337 @@ class MainWindow(QMainWindow):
             "circuits": circuit_windows,
             "window_registry": registry_payload,
         }
+
+    def _resolve_project_reference_path(self, project_dir: Path, raw_path: str) -> str:
+        text = str(raw_path).strip()
+        if not text:
+            return text
+        path = Path(text)
+        if not path.is_absolute():
+            path = project_dir / path
+        return self._normalize_path(str(path))
+
+    def _rewrite_window_state_touchstone_paths(self, kind: str, state: dict, transform) -> dict:
+        updated = deepcopy(state)
+
+        if kind in {"sp", "tdr"}:
+            rewritten_files: list[dict] = []
+            for file_entry in updated.get("files", []):
+                if not isinstance(file_entry, dict):
+                    continue
+                rewritten_entry = dict(file_entry)
+                raw_path = str(rewritten_entry.get("file_path") or "").strip()
+                if raw_path:
+                    rewritten_path = transform(raw_path)
+                    rewritten_entry["file_path"] = rewritten_path
+                    rewritten_entry["file_name"] = Path(rewritten_path).name
+                rewritten_files.append(rewritten_entry)
+            updated["files"] = rewritten_files
+            rewritten_excluded: list[str] = []
+            for raw_path in updated.get("excluded_files", []):
+                path_text = str(raw_path).strip()
+                if path_text:
+                    rewritten_excluded.append(transform(path_text))
+            if "excluded_files" in updated or rewritten_excluded:
+                updated["excluded_files"] = rewritten_excluded
+            return updated
+
+        if kind == "circuit":
+            rewritten_instances: list[dict] = []
+            for instance in updated.get("instances", []):
+                if not isinstance(instance, dict):
+                    continue
+                rewritten_instance = dict(instance)
+                if str(rewritten_instance.get("block_kind", "touchstone")) == "touchstone":
+                    raw_path = str(rewritten_instance.get("source_file_id") or "").strip()
+                    if raw_path:
+                        rewritten_instance["source_file_id"] = transform(raw_path)
+                rewritten_instances.append(rewritten_instance)
+            updated["instances"] = rewritten_instances
+
+        return updated
+
+    def _resolve_project_payload_touchstone_paths(self, payload: dict, project_dir: Path) -> dict:
+        resolved = deepcopy(payload)
+
+        loaded_files: list[dict] = []
+        for item in resolved.get("loaded_files", []):
+            if not isinstance(item, dict):
+                continue
+            rewritten_item = dict(item)
+            raw_path = str(rewritten_item.get("file_path") or "").strip()
+            if raw_path:
+                resolved_path = self._resolve_project_reference_path(project_dir, raw_path)
+                rewritten_item["file_path"] = resolved_path
+                rewritten_item["file_name"] = Path(resolved_path).name
+            loaded_files.append(rewritten_item)
+        resolved["loaded_files"] = loaded_files
+
+        registry = resolved.get("window_registry")
+        if isinstance(registry, dict):
+            for kind in ("sp", "tdr", "circuit"):
+                raw_entries = registry.get(kind, [])
+                if not isinstance(raw_entries, list):
+                    continue
+                rewritten_entries: list[dict] = []
+                for entry in raw_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    rewritten_entry = dict(entry)
+                    state = rewritten_entry.get("state")
+                    if isinstance(state, dict):
+                        rewritten_entry["state"] = self._rewrite_window_state_touchstone_paths(
+                            kind,
+                            state,
+                            lambda raw, project_dir=project_dir: self._resolve_project_reference_path(project_dir, raw),
+                        )
+                    rewritten_entries.append(rewritten_entry)
+                registry[kind] = rewritten_entries
+
+        for key, kind in (("plots", "sp"), ("tdr_plots", "tdr"), ("circuits", "circuit")):
+            raw_states = resolved.get(key, [])
+            if not isinstance(raw_states, list):
+                continue
+            rewritten_states: list[dict] = []
+            for state in raw_states:
+                if not isinstance(state, dict):
+                    continue
+                rewritten_states.append(
+                    self._rewrite_window_state_touchstone_paths(
+                        kind,
+                        state,
+                        lambda raw, project_dir=project_dir: self._resolve_project_reference_path(project_dir, raw),
+                    )
+                )
+            resolved[key] = rewritten_states
+
+        return resolved
+
+    def _collect_referenced_touchstone_paths(self, payload: dict) -> list[str]:
+        seen: set[str] = set()
+        referenced: list[str] = []
+
+        def _remember(raw_path: str) -> None:
+            normalized = self._normalize_path(raw_path)
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            referenced.append(normalized)
+
+        registry = payload.get("window_registry")
+        if not isinstance(registry, dict):
+            return referenced
+
+        for kind in ("sp", "tdr"):
+            raw_entries = registry.get(kind, [])
+            if not isinstance(raw_entries, list):
+                continue
+            for entry in raw_entries:
+                if not isinstance(entry, dict):
+                    continue
+                state = entry.get("state")
+                if not isinstance(state, dict):
+                    continue
+                for file_entry in state.get("files", []):
+                    if not isinstance(file_entry, dict):
+                        continue
+                    raw_path = str(file_entry.get("file_path") or "").strip()
+                    if raw_path:
+                        _remember(raw_path)
+
+        raw_circuits = registry.get("circuit", [])
+        if isinstance(raw_circuits, list):
+            for entry in raw_circuits:
+                if not isinstance(entry, dict):
+                    continue
+                state = entry.get("state")
+                if not isinstance(state, dict):
+                    continue
+                for instance in state.get("instances", []):
+                    if not isinstance(instance, dict):
+                        continue
+                    if str(instance.get("block_kind", "touchstone")) != "touchstone":
+                        continue
+                    raw_path = str(instance.get("source_file_id") or "").strip()
+                    if raw_path:
+                        _remember(raw_path)
+
+        return referenced
+
+    def _copy_touchstone_sources_for_export(
+        self,
+        source_paths: list[str],
+        source_dir: Path,
+    ) -> dict[str, str]:
+        source_dir.mkdir(parents=True, exist_ok=True)
+        copied: dict[str, str] = {}
+        used_names: set[str] = set()
+
+        for raw_path in source_paths:
+            normalized = self._normalize_path(raw_path)
+            if not normalized:
+                continue
+            source_path = Path(normalized)
+            if not source_path.exists():
+                raise FileNotFoundError(normalized)
+
+            candidate_name = source_path.name
+            name_key = candidate_name.lower()
+            if name_key in used_names:
+                stem = source_path.stem
+                suffix = source_path.suffix
+                index = 2
+                while True:
+                    candidate_name = f"{stem}_{index}{suffix}"
+                    name_key = candidate_name.lower()
+                    if name_key not in used_names:
+                        break
+                    index += 1
+            used_names.add(name_key)
+
+            target_path = source_dir / candidate_name
+            shutil.copy2(source_path, target_path)
+            copied[normalized] = (Path(source_dir.name) / candidate_name).as_posix()
+
+        return copied
+
+    def _build_export_project_payload(
+        self,
+        payload: dict,
+        referenced_paths: list[str],
+        source_path_map: dict[str, str],
+    ) -> dict:
+        exported = deepcopy(payload)
+        exported["loaded_files"] = [
+            {
+                "file_path": source_path_map[normalized],
+                "file_name": Path(source_path_map[normalized]).name,
+            }
+            for normalized in referenced_paths
+            if normalized in source_path_map
+        ]
+
+        registry = exported.get("window_registry")
+        if isinstance(registry, dict):
+            for kind in ("sp", "tdr", "circuit"):
+                raw_entries = registry.get(kind, [])
+                if not isinstance(raw_entries, list):
+                    continue
+                rewritten_entries: list[dict] = []
+                for entry in raw_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    rewritten_entry = dict(entry)
+                    state = rewritten_entry.get("state")
+                    if isinstance(state, dict):
+                        rewritten_entry["state"] = self._rewrite_window_state_touchstone_paths(
+                            kind,
+                            state,
+                            lambda raw, source_path_map=source_path_map: source_path_map.get(self._normalize_path(raw), raw),
+                        )
+                    rewritten_entries.append(rewritten_entry)
+                registry[kind] = rewritten_entries
+
+        for key, kind in (("plots", "sp"), ("tdr_plots", "tdr"), ("circuits", "circuit")):
+            raw_states = exported.get(key, [])
+            if not isinstance(raw_states, list):
+                continue
+            rewritten_states: list[dict] = []
+            for state in raw_states:
+                if not isinstance(state, dict):
+                    continue
+                rewritten_states.append(
+                    self._rewrite_window_state_touchstone_paths(
+                        kind,
+                        state,
+                        lambda raw, source_path_map=source_path_map: source_path_map.get(self._normalize_path(raw), raw),
+                    )
+                )
+            exported[key] = rewritten_states
+
+        return exported
+
+    def _build_export_project_bundle(self, project_path: Path) -> tuple[Path, Path, Path, list[str]]:
+        self._project_data_dir = project_path.with_name(f"{project_path.stem}_Data")
+        export_warnings = self._export_project_data_files(self._project_data_dir)
+        payload = self._build_project_payload()
+        referenced_paths = self._collect_referenced_touchstone_paths(payload)
+
+        export_dir = project_path.with_name(f"{project_path.stem}_Export")
+        export_project_path = export_dir / project_path.name
+        export_data_dir = export_dir / f"{project_path.stem}_Data"
+        export_source_dir = export_dir / f"{project_path.stem}_Source"
+        export_zip_path = export_dir.with_suffix(".zip")
+
+        try:
+            if export_dir.exists():
+                shutil.rmtree(export_dir)
+            export_dir.mkdir(parents=True, exist_ok=True)
+
+            if export_zip_path.exists():
+                export_zip_path.unlink()
+
+            if self._project_data_dir.exists():
+                shutil.copytree(self._project_data_dir, export_data_dir)
+            else:
+                export_data_dir.mkdir(parents=True, exist_ok=True)
+
+            source_path_map = self._copy_touchstone_sources_for_export(referenced_paths, export_source_dir)
+            export_payload = self._build_export_project_payload(payload, referenced_paths, source_path_map)
+            with open(export_project_path, "w", encoding="utf-8") as fp:
+                json.dump(export_payload, fp, indent=2)
+
+            archive_path = shutil.make_archive(
+                str(export_dir),
+                "zip",
+                root_dir=export_dir.parent,
+                base_dir=export_dir.name,
+            )
+        except Exception:
+            if export_dir.exists():
+                shutil.rmtree(export_dir, ignore_errors=True)
+            if export_zip_path.exists():
+                try:
+                    export_zip_path.unlink()
+                except OSError:
+                    pass
+            raise
+
+        return export_dir, export_project_path, Path(archive_path), export_warnings
+
+    def _export_project(self) -> bool:
+        if self._project_path is None:
+            QMessageBox.information(
+                self,
+                "Export Project",
+                "Save the project first. A Save Project As dialog will open now.",
+            )
+            if not self._save_project_as():
+                return False
+
+        project_path = Path(str(self._project_path))
+        try:
+            export_dir, export_project_path, export_zip_path, export_warnings = self._build_export_project_bundle(project_path)
+        except FileNotFoundError as exc:
+            QMessageBox.critical(
+                self,
+                "Export failed",
+                f"Could not export the project because this Touchstone file is missing:\n{exc}",
+            )
+            return False
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", f"Could not export project:\n{exc}")
+            return False
+
+        message = (
+            f"Export folder created:\n{export_dir}\n\n"
+            f"Exported project file:\n{export_project_path}\n\n"
+            f"ZIP archive:\n{export_zip_path}"
+        )
+        if export_warnings:
+            message += "\n\nSome project data exports were missing:\n" + "\n".join(export_warnings)
+        QMessageBox.information(self, "Project exported", message)
+        return True
 
     def _save_project_to_path(self, file_path: str) -> bool:
         self._project_data_dir = Path(file_path).with_name(Path(file_path).stem + "_Data")
@@ -1077,6 +1989,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open failed", f"Could not open project:\n{exc}")
             return
 
+        payload = self._resolve_project_payload_touchstone_paths(payload, Path(file_path).parent)
+
         raw_files = payload.get("loaded_files", [])
         file_paths: list[str] = []
         for item in raw_files:
@@ -1227,8 +2141,10 @@ class MainWindow(QMainWindow):
             a.setEnabled(False)
             return
 
+        touchstone_icon = self._icon_for_kind("touchstone-file")
         for loaded in loaded_files:
             submenu = self._tables_menu.addMenu(loaded.display_name)
+            submenu.setIcon(touchstone_icon)
             submenu.addAction(
                 "Raw data table",
                 lambda checked=False, item=loaded: self._show_raw_table(item),

@@ -1,14 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 PROJECT_ROOT = os.path.abspath(globals().get('SPECPATH', os.getcwd()))
+SRC_ROOT = os.path.join(PROJECT_ROOT, 'src')
+
+if SRC_ROOT not in sys.path:
+    sys.path.insert(0, SRC_ROOT)
 
 hiddenimports = []
 hiddenimports += collect_submodules('sparams_utility')
-datas = [
-    (os.path.join(PROJECT_ROOT, 'src', 'sparams_utility', 'resources', 'help', 'help_en.html'), 'sparams_utility/resources/help'),
+datas = collect_data_files(
+    'sparams_utility',
+    includes=[
+        'resources/*.svg',
+        'resources/*.png',
+        'resources/help/*.html',
+        'resources/help/images/*',
+    ],
+) + [
     (os.path.join(PROJECT_ROOT, 'Images', 'Splash_Screen.png'), 'Images'),
     (os.path.join(PROJECT_ROOT, 'Images', 'Icon.png'), 'Images'),
 ]
@@ -16,7 +28,7 @@ datas = [
 
 a = Analysis(
     ['app.py'],
-    pathex=['src'],
+    pathex=[SRC_ROOT],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,

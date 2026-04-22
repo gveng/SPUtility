@@ -63,6 +63,8 @@ _MIME_BLOCK_DEF = "application/x-sparams-block-def"
 _BLOCK_WIDTH = 80.0
 _PORT_RADIUS = 6.0
 _GRID_SIZE = 20.0
+_PALETTE_PREVIEW_WIDTH = 170.0
+_TOUCHSTONE_PALETTE_PREVIEW_WIDTH = 220.0
 _SCHEMATIC_BG = QColor("#f7f7f7")
 _FREQUENCY_UNIT_SCALE = {
     "Hz": 1.0,
@@ -150,7 +152,14 @@ def _block_value_label(block_kind: str, value: float) -> str:
     return f"{value:g} Ohm"
 
 
-def _label_band_height_for_text(text: str, width: float, point_size: float, *, minimum: float = 18.0) -> float:
+def _label_band_height_for_text(
+    text: str,
+    width: float,
+    point_size: float,
+    *,
+    minimum: float = 18.0,
+    wrap_mode=Qt.TextWordWrap,
+) -> float:
     font = QFont()
     font.setPointSizeF(point_size)
     metrics = QFontMetrics(font)
@@ -159,7 +168,7 @@ def _label_band_height_for_text(text: str, width: float, point_size: float, *, m
         0,
         max(24, int(width - 6.0)),
         1000,
-        int(Qt.TextWordWrap | Qt.AlignCenter),
+        int(wrap_mode | Qt.AlignCenter),
         text,
     )
     return max(minimum, float(text_rect.height()) + 8.0)
@@ -180,9 +189,23 @@ class BlockPreviewWidget(QWidget):
         self._nports = nports
         self._block_kind = block_kind
         self._impedance_ohm = impedance_ohm
+        self._preview_width = (
+            _TOUCHSTONE_PALETTE_PREVIEW_WIDTH
+            if block_kind == "touchstone"
+            else _PALETTE_PREVIEW_WIDTH
+        )
+        self._touchstone_label_band_height = 0.0
+        self.setMinimumWidth(int(self._preview_width))
         if block_kind == "touchstone":
             body_h = max(26, (max(nports, 2) + 1) * 9)
-            self.setMinimumHeight(body_h + 26)
+            self._touchstone_label_band_height = _label_band_height_for_text(
+                self._label,
+                self._preview_width - 12.0,
+                6.5,
+                minimum=18.0,
+                wrap_mode=Qt.TextWrapAnywhere,
+            )
+            self.setMinimumHeight(int(body_h + self._touchstone_label_band_height + 8.0))
         elif block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
             self.setMinimumHeight(56)
         elif block_kind in {"port_diff", "port_ground", "gnd"}:
@@ -199,18 +222,21 @@ class BlockPreviewWidget(QWidget):
     def sizeHint(self) -> QSize:  # noqa: N802
         if self._block_kind == "touchstone":
             body_h = max(26, (max(self._nports, 2) + 1) * 9)
-            return QSize(170, body_h + 26)
+            return QSize(
+                int(self._preview_width),
+                int(body_h + self._touchstone_label_band_height + 8.0),
+            )
         if self._block_kind in {"lumped_r", "lumped_l", "lumped_c"}:
-            return QSize(170, 56)
+            return QSize(int(self._preview_width), 56)
         if self._block_kind in {"port_diff", "port_ground", "gnd"}:
-            return QSize(170, 52)
+            return QSize(int(self._preview_width), 52)
         if self._block_kind in {"driver_se", "driver_diff"}:
-            return QSize(170, 56)
+            return QSize(int(self._preview_width), 56)
         if self._block_kind in {"eyescope_se", "eyescope_diff"}:
-            return QSize(170, 56)
+            return QSize(int(self._preview_width), 56)
         if self._block_kind == "net_node":
-            return QSize(170, 42)
-        return QSize(170, max(48, 20 + max(self._nports, 2) * 6))
+            return QSize(int(self._preview_width), 42)
+        return QSize(int(self._preview_width), max(48, 20 + max(self._nports, 2) * 6))
 
     def paintEvent(self, event) -> None:  # noqa: N802, ANN001
         del event
@@ -368,8 +394,13 @@ class BlockPreviewWidget(QWidget):
         font.setPointSizeF(max(6.5, font.pointSizeF() - 0.5))
         painter.setFont(font)
         painter.setPen(QPen(QColor("#0f172a"), 1.0))
-        label_area = QRectF(rect.left() - 10.0, rect.bottom() + 2.0, rect.width() + 20.0, 36.0)
-        painter.drawText(label_area, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, self._label)
+        label_area = QRectF(
+            6.0,
+            rect.bottom() + 2.0,
+            max(24.0, self.rect().width() - 12.0),
+            max(18.0, self.rect().height() - rect.bottom() - 4.0),
+        )
+        painter.drawText(label_area, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWrapAnywhere, self._label)
 
     def _draw_ground_port_symbol(self, painter: QPainter, rect: QRectF) -> None:
         fg = QColor("#1e293b")

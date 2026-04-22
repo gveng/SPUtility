@@ -32,6 +32,7 @@ _TABLE_FONT_PT = 8
 
 class PlotWindow(QMainWindow):
     project_modified = Signal()
+    unload_file_requested = Signal(str)
 
     _PLOT_COLORS = [
         "#1f77b4",
@@ -59,6 +60,7 @@ class PlotWindow(QMainWindow):
         self._state = state
         self._selected_traces: Dict[str, Set[str]] = {}
         self._labels: Dict[str, str] = {}          # file_id -> legend label
+        self._excluded_file_ids: Set[str] = set()  # file_ids hidden from this plot only
         self._row_to_fid: List[str] = []            # row index -> file_id
         self._legend_offset = (10.0, 10.0)
         self._settings = PlotSettings()
@@ -150,17 +152,30 @@ class PlotWindow(QMainWindow):
 
     # ── Table population ──────────────────────────────────────────────────
 
+    def _visible_loaded_files(self) -> List:
+        return [
+            loaded
+            for loaded in self._state.get_loaded_files()
+            if loaded.file_id not in self._excluded_file_ids
+        ]
+
     def refresh_from_state(self) -> None:
         loaded_files = self._state.get_loaded_files()
         valid_ids = {item.file_id for item in loaded_files}
         self._selected_traces = {
             fid: t for fid, t in self._selected_traces.items() if fid in valid_ids
         }
+        self._labels = {fid: label for fid, label in self._labels.items() if fid in valid_ids}
+        self._excluded_file_ids = {
+            fid for fid in self._excluded_file_ids if fid in valid_ids
+        }
+
+        visible_files = self._visible_loaded_files()
 
         # Collect unique trace names in insertion order
         all_traces: List[str] = []
         seen: Set[str] = set()
-        for loaded in loaded_files:
+        for loaded in visible_files:
             for trace in loaded.data.trace_names:
                 if trace not in seen:
                     all_traces.append(trace)
@@ -176,10 +191,10 @@ class PlotWindow(QMainWindow):
         self._selection_table.setRowCount(0)
         self._selection_table.setColumnCount(n_cols)
         self._selection_table.setHorizontalHeaderLabels(headers)
-        self._selection_table.setRowCount(len(loaded_files))
+        self._selection_table.setRowCount(len(visible_files))
 
         self._row_to_fid = []
-        for row, loaded in enumerate(loaded_files):
+        for row, loaded in enumerate(visible_files):
             self._row_to_fid.append(loaded.file_id)
 
             # Col 0: file name (not editable)
@@ -228,15 +243,30 @@ class PlotWindow(QMainWindow):
     # ── Signal handlers ───────────────────────────────────────────────────
 
     def _on_table_context_menu(self, pos) -> None:
-        row = self._selection_table.rowAt(pos.y())
+        item = self._selection_table.itemAt(pos)
+        if item is None or item.column() != 0:
+            return
+        row = item.row()
         if row < 0 or row >= len(self._row_to_fid):
             return
         fid = self._row_to_fid[row]
         menu = QMenu(self)
-        action = menu.addAction("Unload file")
+        unload_action = menu.addAction("Unload file")
+        remove_action = menu.addAction("Remove from this plot")
         chosen = menu.exec(self._selection_table.viewport().mapToGlobal(pos))
-        if chosen is action:
-            self._state.unload_file(fid)
+        if chosen is unload_action:
+            self.unload_file_requested.emit(fid)
+        elif chosen is remove_action:
+            self._remove_file_from_plot(fid)
+
+    def _remove_file_from_plot(self, file_id: str) -> None:
+        if file_id not in {loaded.file_id for loaded in self._state.get_loaded_files()}:
+            return
+        self._selected_traces.pop(file_id, None)
+        self._labels.pop(file_id, None)
+        self._excluded_file_ids.add(file_id)
+        self.refresh_from_state()
+        self.project_modified.emit()
 
     def _on_cell_changed(self, row: int, col: int) -> None:
         if col != 1:
@@ -276,7 +306,7 @@ class PlotWindow(QMainWindow):
         plot_item.setLogMode(self._settings.x_log, self._settings.y_log)
 
         color_index = 0
-        for loaded in self._state.get_loaded_files():
+        for loaded in self._visible_loaded_files():
             selected = sorted(self._selected_traces.get(loaded.file_id, set()))
             if not selected:
                 continue
@@ -365,13 +395,21 @@ class PlotWindow(QMainWindow):
 
         restored_labels: Dict[str, str] = {}
         restored_traces: Dict[str, Set[str]] = {}
+        restored_excluded: Set[str] = set()
+
+        for raw_path in state.get("excluded_files", []):
+            if not raw_path:
+                continue
+            file_id = loaded_by_path.get(str(Path(raw_path).resolve()))
+            if file_id is not None:
+                restored_excluded.add(file_id)
 
         for file_entry in state.get("files", []):
             raw_path = file_entry.get("file_path")
             if not raw_path:
                 continue
             file_id = loaded_by_path.get(str(Path(raw_path).resolve()))
-            if file_id is None:
+            if file_id is None or file_id in restored_excluded:
                 continue
 
             label = file_entry.get("legend_label")
@@ -386,6 +424,8 @@ class PlotWindow(QMainWindow):
             self._labels.update(restored_labels)
         if restored_traces:
             self._selected_traces.update(restored_traces)
+        if restored_excluded:
+            self._excluded_file_ids.update(restored_excluded)
 
         legend_position = state.get("legend_position")
         if (
@@ -400,7 +440,7 @@ class PlotWindow(QMainWindow):
     def export_project_state(self) -> dict:
         self._legend_offset = self._get_legend_offset()
         per_file = []
-        for loaded in self._state.get_loaded_files():
+        for loaded in self._visible_loaded_files():
             selected = sorted(self._selected_traces.get(loaded.file_id, set()))
             per_file.append(
                 {
@@ -410,6 +450,12 @@ class PlotWindow(QMainWindow):
                     "selected_parameters": selected,
                 }
             )
+
+        excluded_files = []
+        for file_id in sorted(self._excluded_file_ids):
+            loaded = self._state.get_file(file_id)
+            if loaded is not None:
+                excluded_files.append(str(loaded.path))
 
         return {
             "window_title": self.windowTitle(),
@@ -426,6 +472,7 @@ class PlotWindow(QMainWindow):
             },
             "legend_position": [self._legend_offset[0], self._legend_offset[1]],
             "files": per_file,
+            "excluded_files": excluded_files,
         }
 
     def _get_legend_offset(self) -> tuple[float, float]:

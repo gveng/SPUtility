@@ -76,6 +76,7 @@
   <p>
     SPUtility is a desktop viewer and analysis tool for Touchstone S-parameter files.
     This guide explains both <b>how to use each section</b> and <b>how calculations and measurements are performed</b>.
+    The current document reflects the workflow available in version <b>2.2</b>.
   </p>
 
   <h2>Main Workflow</h2>
@@ -85,7 +86,9 @@
     <li>Use <b>Charts &gt; Open plot window</b> for S-parameter overlays.</li>
     <li>Use <b>TDR &gt; Open TDR window</b> for time-domain impedance profiles.</li>
     <li>Use <b>Circuit &gt; Open circuit composer</b> for network assembly, export, and channel simulation.</li>
+    <li>Use the project tree on the left to reopen, minimize, duplicate, or delete existing items.</li>
     <li>Use <b>File &gt; Save Project</b> to store full workspace state.</li>
+    <li>Use <b>File &gt; Export Project</b> when you need a portable ZIP bundle with copied project data and referenced Touchstone sources.</li>
   </ol>
 
   <h2>File Menu and Recent History</h2>
@@ -98,6 +101,46 @@
   </ul>
   <p>
     Missing files are removed automatically from history when selected.
+  </p>
+  <p>
+    <b>Export Project</b> creates a sibling folder named <code>&lt;ProjectName&gt;_Export</code>, copies the saved project,
+    duplicates generated project data into its local data folder, gathers referenced Touchstone sources, and finally creates a ZIP archive.
+    The exported project can then be moved to another machine without manually rebuilding the folder structure.
+  </p>
+
+  <h2>Project Tree and Window Management</h2>
+  <p>
+    The left project tree is the main control point for already loaded files, open analysis windows, and generated outputs.
+    File extensions are hidden in the tree to keep names readable, while item icons identify Touchstone files, S-parameter plots, circuits, and eye diagrams.
+  </p>
+  <table>
+    <tr>
+      <th>Action</th>
+      <th>Description</th>
+    </tr>
+    <tr>
+      <td><b>Open</b></td>
+      <td>Activates the selected window or opens the selected generated file again.</td>
+    </tr>
+    <tr>
+      <td><b>Close</b></td>
+      <td>Closes the current window instance while keeping the saved project entry available for reopening.</td>
+    </tr>
+    <tr>
+      <td><b>Minimize</b></td>
+      <td>Minimizes the selected sub-window inside the MDI workspace.</td>
+    </tr>
+    <tr>
+      <td><b>Duplicate</b></td>
+      <td>Creates a new copy of the selected plot, TDR, circuit, or eye output and reloads the same Touchstone inputs and saved settings.</td>
+    </tr>
+    <tr>
+      <td><b>Delete</b></td>
+      <td>Removes the selected tree item after confirmation. When the item has persisted project data, the related saved files are deleted too.</td>
+    </tr>
+  </table>
+  <p>
+    Use these actions with the right mouse button directly on the tree item you want to manage.
   </p>
 
   <h2>S-Parameter Plot Windows</h2>
@@ -113,6 +156,12 @@
     <li>They report the selected traces exactly as present in loaded data tables.</li>
   </ul>
   <div class="formula">Magnitude in dB: 20 * log10(|Sij|)</div>
+  <h3>Managing source files inside a plot</h3>
+  <ul>
+    <li>Right-click a loaded file inside the plot file list to choose <b>Unload file</b> or <b>Remove from this plot</b>.</li>
+    <li><b>Unload file</b> removes the Touchstone file from the whole application state and updates every dependent window.</li>
+    <li><b>Remove from this plot</b> hides that file only in the current plot, preserving it for other plots, TDR windows, circuits, and saved project state.</li>
+  </ul>
 
   <h2>TDR Window</h2>
   <h3>What is calculated</h3>
@@ -191,9 +240,13 @@ EyeCrossing_pct = 100 * (CrossingLevel - ZeroLevel) / EyeAmplitude</div>
   <p>A saved project stores:</p>
   <ul>
     <li>Loaded file paths.</li>
-    <li>Plot, TDR, and circuit windows with their settings and sizes.</li>
-    <li>Selected traces, legend labels, and per-window configuration.</li>
+    <li>Plot, TDR, and circuit windows with their settings, sizes, and saved output references.</li>
+    <li>Selected traces, legend labels, hidden plot-local files, and per-window configuration.</li>
+    <li>Generated outputs such as exported circuit models and saved eye snapshots.</li>
   </ul>
+  <p>
+    When an exported project is reopened, relative source paths inside the export bundle are resolved against the exported project folder automatically.
+  </p>
 
   <h2>View Menu</h2>
   <ul>
