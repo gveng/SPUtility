@@ -1,0 +1,117 @@
+{
+  "app_name": "SPUtility",
+  "app_version": "1.0.1",
+  "saved_at": "2026-04-13T17:21:15",
+  "loaded_files": [
+    {
+      "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\Aries_Full_Stack_50R_Port_13_24.s4p",
+      "file_name": "Aries_Full_Stack_50R_Port_13_24.s4p"
+    },
+    {
+      "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\U5_PHY_DN.s2p",
+      "file_name": "U5_PHY_DN.s2p"
+    },
+    {
+      "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\U5_PHY_DP.s2p",
+      "file_name": "U5_PHY_DP.s2p"
+    }
+  ],
+  "plots": [
+    {
+      "window_title": "S-Parameter Plots #1",
+      "plot_settings": {
+        "x_log": false,
+        "y_log": false,
+        "x_autorange": false,
+        "y_autorange": false,
+        "x_min": 0.0,
+        "x_max": 20000000000.0,
+        "y_min": -65.0,
+        "y_max": 0.0
+      },
+      "legend_position": [
+        10.0,
+        10.0
+      ],
+      "files": [
+        {
+          "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\Aries_Full_Stack_50R_Port_13_24.s4p",
+          "file_name": "Aries_Full_Stack_50R_Port_13_24.s4p",
+          "legend_label": "Aries Simulated",
+          "selected_parameters": [
+            "S11",
+            "S22"
+          ]
+        },
+        {
+          "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\U5_PHY_DN.s2p",
+          "file_name": "U5_PHY_DN.s2p",
+          "legend_label": "Aries Measured DN",
+          "selected_parameters": [
+            "S22"
+          ]
+        },
+        {
+          "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\U5_PHY_DP.s2p",
+          "file_name": "U5_PHY_DP.s2p",
+          "legend_label": "Aries Measured DP",
+          "selected_parameters": [
+            "S22"
+          ]
+        }
+      ],
+      "window_size": [
+        1200,
+        595
+      ]
+    },
+    {
+      "window_title": "S-Parameter Plots #2",
+      "plot_settings": {
+        "x_log": false,
+        "y_log": false,
+        "x_autorange": false,
+        "y_autorange": false,
+        "x_min": 0.0,
+        "x_max": 20000000000.0,
+        "y_min": -65.0,
+        "y_max": 0.0
+      },
+      "legend_position": [
+        10.0,
+        10.0
+      ],
+      "files": [
+        {
+          "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\Aries_Full_Stack_50R_Port_13_24.s4p",
+          "file_name": "Aries_Full_Stack_50R_Port_13_24.s4p",
+          "legend_label": "Aries Simulated",
+          "selected_parameters": [
+            "S31",
+            "S42"
+          ]
+        },
+        {
+          "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\U5_PHY_DN.s2p",
+          "file_name": "U5_PHY_DN.s2p",
+          "legend_label": "Aries Measured DN",
+          "selected_parameters": [
+            "S12"
+          ]
+        },
+        {
+          "file_path": "D:\\Visual_Studio_Code\\SParamsUtility\\U5_PHY_DP.s2p",
+          "file_name": "U5_PHY_DP.s2p",
+          "legend_label": "Aries Measured DP",
+          "selected_parameters": [
+            "S12"
+          ]
+        }
+      ],
+      "window_size": [
+        1200,
+        595
+      ]
+    }
+  ]
+}

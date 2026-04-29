@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SPUtility User Guide</title>
+  <style>
+    body {
+      font-family: Segoe UI, Arial, sans-serif;
+      line-height: 1.55;
+      margin: 24px auto;
+      max-width: 980px;
+      background: #ffffff;
+      color: #0f172a;
+    }
+    h1, h2, h3 {
+      color: #0b4ea8;
+    }
+    h2 {
+      border-bottom: 1px solid #d8e3f3;
+      padding-bottom: 4px;
+      margin-top: 30px;
+    }
+    code {
+      background: #f3f5f7;
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+    ul, ol {
+      padding-left: 22px;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 10px 0;
+      font-size: 0.95rem;
+    }
+    th, td {
+      border: 1px solid #c7d2e2;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eaf2ff;
+      color: #003b84;
+    }
+    .formula {
+      font-family: Consolas, "Courier New", monospace;
+      background: #f8fafc;
+      border: 1px solid #d6e0ef;
+      padding: 10px 12px;
+      margin: 8px 0;
+      border-radius: 6px;
+      white-space: pre-wrap;
+    }
+    .figure {
+      margin: 12px 0 18px;
+      padding: 10px;
+      border: 1px solid #d6e0ef;
+      border-radius: 8px;
+      background: #fcfdff;
+    }
+    .figure img {
+      width: 100%;
+      height: auto;
+    }
+    .caption {
+      margin-top: 6px;
+      font-size: 0.9rem;
+      color: #334155;
+    }
+    .toc {
+      background: #f4f8ff;
+      border: 1px solid #c7d2e2;
+      border-radius: 8px;
+      padding: 14px 22px;
+      margin: 20px 0 30px;
+    }
+    .toc h2 {
+      border-bottom: none;
+      margin-top: 0;
+      color: #003b84;
+    }
+    .toc ol { counter-reset: toc-section; list-style: none; padding-left: 0; }
+    .toc ol > li { counter-increment: toc-section; margin: 4px 0; }
+    .toc ol > li::before {
+      content: counter(toc-section) ". ";
+      font-weight: 600;
+      color: #0b4ea8;
+    }
+    .toc ol ol { padding-left: 20px; counter-reset: toc-sub; }
+    .toc ol ol > li { counter-increment: toc-sub; }
+    .toc ol ol > li::before {
+      content: counter(toc-section) "." counter(toc-sub) " ";
+      color: #6b7280;
+      font-weight: normal;
+    }
+    .toc a { color: #0b4ea8; text-decoration: none; }
+    .toc a:hover { text-decoration: underline; }
+    .back {
+      display: inline-block;
+      font-size: 0.85rem;
+      margin-left: 12px;
+      color: #6b7280;
+      text-decoration: none;
+    }
+    .back:hover { color: #0b4ea8; }
+    .symbol-grid {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 14px;
+      align-items: start;
+      margin: 8px 0 20px;
+    }
+    .symbol-box {
+      background: #fcfdff;
+      border: 1px solid #d6e0ef;
+      border-radius: 6px;
+      padding: 8px;
+      text-align: center;
+    }
+    .symbol-box svg { display: block; margin: 0 auto; }
+    .note {
+      background: #fff8e6;
+      border-left: 4px solid #f0b400;
+      padding: 8px 12px;
+      margin: 10px 0;
+      border-radius: 4px;
+    }
+    .math {
+      font-family: "Cambria Math", "Times New Roman", serif;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body id="top">
+  <h1>SPUtility User Guide</h1>
+  <p>
+    SPUtility is a desktop viewer, network composer and channel-simulation tool for Touchstone
+    S-parameter files. It targets signal-integrity engineers who need a quick, scriptable, single-window
+    workflow to inspect S-parameter blocks, build interconnect models, run time-domain reflectometry,
+    convolve transmitted bit streams through linear channels, and read out eye-diagram metrics.
+  </p>
+  <p>
+    This document describes the GUI <b>and</b> the underlying numerical methods, so that every
+    measurement and every plot can be reproduced and audited. It corresponds to version <b>2.2</b>.
+  </p>
+
+  <div class="toc">
+    <h2>Table of Contents</h2>
+    <ol>
+      <li><a href="#sec-workflow">Main Workflow &amp; Quickstart</a></li>
+      <li><a href="#sec-file">File Menu, Recent History &amp; Project Export</a></li>
+      <li><a href="#sec-tree">Project Tree &amp; Window Management</a></li>
+      <li><a href="#sec-view">View Menu</a></li>
+      <li><a href="#sec-tables">Tables Window</a></li>
+      <li><a href="#sec-plot">S-Parameter Plot Window</a>
+        <ol>
+          <li><a href="#sec-plot-theory">Theory: S-parameters &amp; reference impedance</a></li>
+          <li><a href="#sec-plot-axes">Axes, scaling and source management</a></li>
+        </ol>
+      </li>
+      <li><a href="#sec-tdr">TDR Window</a>
+        <ol>
+          <li><a href="#sec-tdr-theory">Theory: Time-Domain Reflectometry</a></li>
+          <li><a href="#sec-tdr-window">Windowing &amp; uniform resampling</a></li>
+          <li><a href="#sec-tdr-impulse">Impulse response &amp; step integration</a></li>
+          <li><a href="#sec-tdr-z">Reflection &rarr; impedance conversion</a></li>
+          <li><a href="#sec-tdr-display">Display processing</a></li>
+        </ol>
+      </li>
+      <li><a href="#sec-circuit">Circuit Editor</a>
+        <ol>
+          <li><a href="#sec-circuit-elements">Element library</a></li>
+          <li><a href="#sec-circuit-solver">Network solver (Y/Z/S conversion)</a></li>
+          <li><a href="#sec-circuit-export">Equivalent network export</a></li>
+        </ol>
+      </li>
+      <li><a href="#sec-channel">Channel Simulation &amp; Eye Diagram</a>
+        <ol>
+          <li><a href="#sec-channel-pipeline">Pipeline overview</a></li>
+          <li><a href="#sec-channel-prbs">PRBS generators</a></li>
+          <li><a href="#sec-channel-encoding">8b/10b encoder (running disparity)</a></li>
+          <li><a href="#sec-channel-nrz">NRZ waveform with erf edges</a></li>
+          <li><a href="#sec-channel-htf">Voltage transfer function (Z<sub>src</sub> + S<sub>11</sub>)</a></li>
+          <li><a href="#sec-channel-conv">Convolution with impulse response</a></li>
+          <li><a href="#sec-channel-eye">Eye folding &amp; jitter injection</a></li>
+          <li><a href="#sec-channel-meas">Measurements</a></li>
+        </ol>
+      </li>
+      <li><a href="#sec-transient">Transient Simulation (Step / Pulse Sources)</a></li>
+      <li><a href="#sec-project">Project Files</a></li>
+      <li><a href="#sec-notes">Notes &amp; Troubleshooting</a></li>
+    </ol>
+  </div>
+
+  <h2 id="sec-workflow">1. Main Workflow &amp; Quickstart <a class="back" href="#top">&uarr; top</a></h2>
+  <ol>
+    <li>Use <b>File &gt; Open File</b> to load one or more Touchstone files (<code>.s2p</code>, <code>.s4p</code>, <code>.s8p</code>, &hellip;).</li>
+    <li>Use <b>Tables</b> to inspect raw complex values and magnitude values.</li>
+    <li>Use <b>Charts &gt; Open plot window</b> for S-parameter overlays.</li>
+    <li>Use <b>TDR &gt; Open TDR window</b> for time-domain impedance profiles.</li>
+    <li>Use <b>Circuit &gt; Open circuit composer</b> for network assembly, export, transient and channel simulation.</li>
+    <li>Use the project tree on the left to reopen, minimize, duplicate, or delete existing items.</li>
+    <li>Use <b>File &gt; Save Project</b> to store full workspace state.</li>
+    <li>Use <b>File &gt; Export Project</b> when you need a portable ZIP bundle with copied project data and referenced Touchstone sources.</li>
+  </ol>
+
+  <h2 id="sec-file">2. File Menu, Recent History &amp; Project Export <a class="back" href="#top">&uarr; top</a></h2>
+  <p>The <b>File</b> menu contains two independent recent histories:</p>
+  <ul>
+    <li><b>Recent Projects</b>: recently opened or saved project JSON files.</li>
+    <li><b>Recent S-Parameters</b>: recently opened Touchstone files (<code>.sNp</code>, <code>.ts</code>).</li>
+  </ul>
+  <p>Missing files are removed automatically from history when selected.</p>
+  <p>
+    <b>Export Project</b> creates a sibling folder named <code>&lt;ProjectName&gt;_Export</code>, copies the saved project,
+    duplicates generated project data into its local data folder, gathers referenced Touchstone sources, and finally creates a ZIP archive.
+    The exported project can then be moved to another machine without manually rebuilding the folder structure.
+  </p>
+
+  <h2 id="sec-tree">3. Project Tree &amp; Window Management <a class="back" href="#top">&uarr; top</a></h2>
+  <p>
+    The left project tree is the main control point for already loaded files, open analysis windows, and generated outputs.
+    File extensions are hidden in the tree to keep names readable, while item icons identify Touchstone files, S-parameter plots, circuits, and eye diagrams.
+  </p>
+  <p>
+    Analysis windows are no longer hosted inside an MDI workspace. Each output category
+    (Circuits, S-Parameter Plots, TDR, Eye Diagrams, Transient Results, Tables) lives in its
+    own top-level window with tabs, so it is independently movable, resizable and visible
+    on the Windows taskbar with the icon of the active tab. A tab can be popped out into a
+    standalone window via right-click &rarr; <i>Detach to separate window</i> (or by double-clicking
+    the tab); each detached window appears as its own taskbar entry as well.
+  </p>
+  <table>
+    <tr><th>Action</th><th>Description</th></tr>
+    <tr><td><b>Open</b></td><td>Activates the selected window or opens the selected generated file again.</td></tr>
+    <tr><td><b>Close</b></td><td>Closes the current window instance while keeping the saved project entry available for reopening.</td></tr>
+    <tr><td><b>Minimize</b></td><td>Minimizes the host category window (or the detached window) on the taskbar.</td></tr>
+    <tr><td><b>Duplicate</b></td><td>Creates a new copy of the selected plot, TDR, circuit, or eye output and reloads the same Touchstone inputs and saved settings.</td></tr>
+    <tr><td><b>Delete</b></td><td>Removes the selected tree item after confirmation. When the item has persisted project data, the related saved files are deleted too.</td></tr>
+  </table>
+  <p>Use these actions with the right mouse button directly on the tree item you want to manage.</p>
+
+  <h2 id="sec-view">4. View Menu <a class="back" href="#top">&uarr; top</a></h2>
+  <ul>
+    <li><b>Minimize all</b> / <b>Restore all</b>: bulk minimize/restore every category window and detached window.</li>
+    <li><b>Resize all graph with last graph window</b>: copy layout from latest graph window.</li>
+    <li><b>Close all</b>: close every open category window and detached window.</li>
+  </ul>
+
+  <h2 id="sec-tables">5. Tables Window <a class="back" href="#top">&uarr; top</a></h2>
+  <p>
+    The Tables window exposes the parsed Touchstone data without any further processing.
+    Two views are available: a <b>complex</b> view (real / imaginary or magnitude / phase as stored)
+    and a <b>magnitude in dB</b> view (precomputed once at parse time as
+    <span class="math">20·log<sub>10</sub>(|S<sub>ij</sub>(f)|)</span>).
+    The reference impedance shown in the header is taken from the Touchstone <code>! Z0 =</code> directive when present
+    (defaulting to 50&nbsp;&Omega;).
+  </p>
+
+  <h2 id="sec-plot">6. S-Parameter Plot Window <a class="back" href="#top">&uarr; top</a></h2>
+
+  <h3 id="sec-plot-theory">6.1 Theory: S-parameters &amp; reference impedance</h3>
+  <p>
+    For an N-port linear time-invariant network at angular frequency <span class="math">&omega; = 2&pi;f</span>,
+    incident and reflected normalized waves at port <i>k</i> are
+  </p>
+  <div class="formula">a_k = (V_k + Z0_k * I_k) / (2 * sqrt(Re{Z0_k}))
+b_k = (V_k - Z0_k * I_k) / (2 * sqrt(Re{Z0_k}))</div>
+  <p>The scattering matrix relates them as <span class="math">b = S&middot;a</span>. Each entry of <b>S</b> can be interpreted as:</p>
+  <ul>
+    <li><b>S<sub>ii</sub></b>: voltage reflection at port <i>i</i> when all other ports are matched.</li>
+    <li><b>S<sub>ji</sub></b>: voltage transmission from port <i>i</i> to port <i>j</i> when all other ports are matched.</li>
+  </ul>
+  <p>Plot windows show the magnitude of the selected entries in dB:</p>
+  <div class="formula">|Sij|_dB = 20 * log10(|Sij(f)|)</div>
+
+  <h3 id="sec-plot-axes">6.2 Axes, scaling and source management</h3>
+  <ul>
+    <li>X axis: linear or logarithmic frequency. Logarithmic mode filters non-positive frequencies.</li>
+    <li>Y axis: linear (dB) or logarithmic dB; the latter is useful for return-loss tails.</li>
+    <li>Each loaded Touchstone file appears in the per-plot file list.
+      Right-click a file:
+      <ul>
+        <li><b>Unload file</b> &mdash; removes the file from the whole application state and updates every dependent window.</li>
+        <li><b>Remove from this plot</b> &mdash; hides the file in the current plot only; the file is still available to other windows and the saved project.</li>
+      </ul>
+    </li>
+    <li>Plot legend labels can be edited in place to produce publication-ready figures.</li>
+  </ul>
+
+  <h2 id="sec-tdr">7. TDR Window <a class="back" href="#top">&uarr; top</a></h2>
+
+  <h3 id="sec-tdr-theory">7.1 Theory: Time-Domain Reflectometry</h3>
+  <p>
+    TDR converts a frequency-domain reflection coefficient <span class="math">S<sub>ii</sub>(f)</span>
+    into the time-domain voltage reflection observed at the same port when an ideal step is launched into the line.
+    For a linear network the relation is purely a Fourier-transform pair plus a step-integration:
+  </p>
+  <div class="formula">h(t)        = F^-1 { Sii(f) }            (impulse reflection)
+rho_step(t) = integral_{-inf..t} h(tau) d tau   (step reflection)
+Z(t)        = Z0 * (1 + rho_step(t)) / (1 - rho_step(t))</div>
+  <div class="figure">
+    <img src="images/tdr_pipeline.svg" alt="TDR processing pipeline">
+    <div class="caption">TDR conversion chain used in SPUtility.</div>
+  </div>
+
+  <h3 id="sec-tdr-window">7.2 Windowing &amp; uniform resampling</h3>
+  <p>
+    The inverse FFT requires <b>uniform</b> frequency spacing and assumes the spectrum is band-limited.
+    SPUtility:
+  </p>
+  <ol>
+    <li>Sorts frequency points and detects whether spacing is uniform (relative tolerance &lt; 1&permil;).</li>
+    <li>If non-uniform, resamples on a uniform <span class="math">[f<sub>min</sub>, f<sub>max</sub>]</span> grid using
+      monotonic <b>PCHIP</b> interpolation (Piecewise Cubic Hermite Interpolating Polynomial)
+      on real and imaginary parts independently &mdash; this preserves monotonic features without
+      Gibbs-style overshoot.</li>
+    <li>Applies a high-frequency <b>taper window</b> (default Tukey &alpha;=0.25) to the upper part of the spectrum.
+      Without windowing, the truncated spectrum produces strong sinc-shaped ringing in the time-domain step.</li>
+    <li>Pads with zeros up to the next power of two for FFT efficiency and improved time resolution.</li>
+  </ol>
+  <div class="formula">dt = 1 / (2 * fmax)        (Nyquist sample period)
+Resolution length = c0 / (2 * fmax)   for vacuum; divide by sqrt(eps_r) for line propagation</div>
+
+  <h3 id="sec-tdr-impulse">7.3 Impulse response &amp; step integration</h3>
+  <p>
+    The impulse reflection is computed by an inverse <b>real</b> FFT (<code>numpy.fft.irfft</code>),
+    exploiting the Hermitian symmetry of physical S-parameters. The step reflection is the running cumulative sum:
+  </p>
+  <div class="formula">rho_step[n] = sum_{k=0..n} h[k]</div>
+  <p>
+    Causality is enforced implicitly: the spectrum is assumed Hermitian (<span class="math">S<sub>ii</sub>(-f) = S<sub>ii</sub>*(f)</span>),
+    so <span class="math">h(t)</span> is real. Negative-time leakage smaller than 1&permil; of peak is treated as numerical noise.
+  </p>
+
+  <h3 id="sec-tdr-z">7.4 Reflection &rarr; impedance conversion</h3>
+  <div class="formula">Z(t) = Z0 * (1 + rho_step(t)) / (1 - rho_step(t))</div>
+  <p>
+    This is the standard mapping from voltage reflection coefficient to impedance,
+    valid for a single-mode lossless probe of impedance <span class="math">Z<sub>0</sub></span>.
+    Values of <span class="math">|&rho;<sub>step</sub>|</span> approaching 1 are clamped at &plusmn;0.999
+    to avoid division blow-up.
+  </p>
+
+  <h3 id="sec-tdr-display">7.5 Display processing</h3>
+  <ul>
+    <li><b>Rise time smoothing</b>: Gaussian convolution with &sigma; chosen so that the 10&ndash;90% rise of an ideal step matches the requested value
+      (<span class="math">t<sub>r</sub>&nbsp;&approx;&nbsp;2.5631&middot;&sigma;</span>). Mimics a real TDR sampler.</li>
+    <li><b>Front shift</b>: time origin shift to align the launch edge with <span class="math">t = 0</span>.</li>
+    <li><b>Total time</b>: clip the visible window to the range relevant to the DUT length.</li>
+  </ul>
+
+  <h2 id="sec-circuit">8. Circuit Editor <a class="back" href="#top">&uarr; top</a></h2>
+  <p>
+    The circuit editor is a schematic canvas that lets you assemble Touchstone blocks together with lumped components,
+    sources, ports and probes, and then run frequency-domain solves, transient simulations or full channel
+    simulations on the resulting network.
+  </p>
+
+  <h3 id="sec-circuit-elements">8.1 Element library</h3>
+  <p>
+    Each block contributes its own admittance / scattering matrix to the global solver. Below is the complete reference,
+    with symbol, parameters and electrical model.
+  </p>
+
+  <h4 id="elem-touchstone">Touchstone block</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="120" height="80" viewBox="0 0 120 80" xmlns="http://www.w3.org/2000/svg">
+        <rect x="20" y="15" width="80" height="50" fill="#eaf2ff" stroke="#0b4ea8" stroke-width="2"/>
+        <text x="60" y="44" text-anchor="middle" font-family="Segoe UI" font-size="13" fill="#003b84">DUT</text>
+        <line x1="0"  y1="30" x2="20"  y2="30" stroke="#000" stroke-width="2"/>
+        <line x1="0"  y1="50" x2="20"  y2="50" stroke="#000" stroke-width="2"/>
+        <line x1="100" y1="30" x2="120" y2="30" stroke="#000" stroke-width="2"/>
+        <line x1="100" y1="50" x2="120" y2="50" stroke="#000" stroke-width="2"/>
+        <text x="6"   y="26" font-size="9">1</text>
+        <text x="6"   y="46" font-size="9">2</text>
+        <text x="110" y="26" font-size="9">3</text>
+        <text x="110" y="46" font-size="9">4</text>
+      </svg>
+    </div>
+    <div>
+      <p>Generic N-port block backed by an external Touchstone file. Carries the file's own reference impedance
+      <span class="math">Z<sub>0</sub></span> and frequency grid; the solver reinterpolates it onto the global sweep.</p>
+      <ul>
+        <li><b>Source file</b>: Touchstone file providing <span class="math">S(f)</span>.</li>
+        <li><b>Display label</b>: free text shown on the canvas.</li>
+        <li><b>Port count</b>: derived from file extension (<code>.sNp</code>).</li>
+        <li><b>Rotation / mirror</b>: cosmetic only; does not change electrical behaviour.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h4 id="elem-r">Resistor (R)</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="160" height="60" viewBox="0 0 160 60" xmlns="http://www.w3.org/2000/svg">
+        <line x1="0"   y1="30" x2="40"  y2="30" stroke="#000" stroke-width="2"/>
+        <polyline points="40,30 50,15 60,45 70,15 80,45 90,15 100,45 110,30"
+                  fill="none" stroke="#000" stroke-width="2"/>
+        <line x1="110" y1="30" x2="160" y2="30" stroke="#000" stroke-width="2"/>
+        <text x="75" y="58" text-anchor="middle" font-size="11">R</text>
+      </svg>
+    </div>
+    <div>
+      <p>Two-port lumped resistor. Modelled as an ideal series resistance with no parasitics.</p>
+      <ul>
+        <li><b>Resistance R</b> [&Omega;]: any positive real value.</li>
+      </ul>
+      <p>Two-port admittance contribution
+      <span class="math">Y = (1/R)&middot;[[1,&minus;1],[&minus;1,1]]</span>.</p>
+    </div>
+  </div>
+
+  <h4 id="elem-l">Inductor (L)</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="160" height="60" viewBox="0 0 160 60" xmlns="http://www.w3.org/2000/svg">
+        <line x1="0"   y1="30" x2="40"  y2="30" stroke="#000" stroke-width="2"/>
+        <path d="M 40 30 a 10 10 0 0 1 20 0 a 10 10 0 0 1 20 0 a 10 10 0 0 1 20 0 a 10 10 0 0 1 20 0"
+              fill="none" stroke="#000" stroke-width="2"/>
+        <line x1="120" y1="30" x2="160" y2="30" stroke="#000" stroke-width="2"/>
+        <text x="80" y="58" text-anchor="middle" font-size="11">L</text>
+      </svg>
+    </div>
+    <div>
+      <p>Two-port lumped inductor. Modelled as an ideal series inductance.</p>
+      <ul>
+        <li><b>Inductance L</b> [H]: positive real.</li>
+      </ul>
+      <p>Series impedance per frequency: <span class="math">Z(f) = j&middot;2&pi;f&middot;L</span>.
+      Admittance contribution: <span class="math">Y = (1/Z)&middot;[[1,&minus;1],[&minus;1,1]]</span>.</p>
+    </div>
+  </div>
+
+  <h4 id="elem-c">Capacitor (C)</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="160" height="60" viewBox="0 0 160 60" xmlns="http://www.w3.org/2000/svg">
+        <line x1="0"   y1="30" x2="70"  y2="30" stroke="#000" stroke-width="2"/>
+        <line x1="70"  y1="10" x2="70"  y2="50" stroke="#000" stroke-width="3"/>
+        <line x1="90"  y1="10" x2="90"  y2="50" stroke="#000" stroke-width="3"/>
+        <line x1="90"  y1="30" x2="160" y2="30" stroke="#000" stroke-width="2"/>
+        <text x="80" y="58" text-anchor="middle" font-size="11">C</text>
+      </svg>
+    </div>
+    <div>
+      <p>Two-port lumped capacitor.</p>
+      <ul>
+        <li><b>Capacitance C</b> [F]: positive real.</li>
+      </ul>
+      <p>Series impedance per frequency: <span class="math">Z(f) = 1 / (j&middot;2&pi;f&middot;C)</span>.</p>
+    </div>
+  </div>
+
+  <h4 id="elem-gnd">Ground (GND)</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+        <line x1="40" y1="0"  x2="40" y2="35" stroke="#000" stroke-width="2"/>
+        <line x1="20" y1="35" x2="60" y2="35" stroke="#000" stroke-width="3"/>
+        <line x1="27" y1="45" x2="53" y2="45" stroke="#000" stroke-width="2"/>
+        <line x1="33" y1="55" x2="47" y2="55" stroke="#000" stroke-width="2"/>
+      </svg>
+    </div>
+    <div>
+      <p>Local ground anchor. Any node connected to a GND symbol is forced to <span class="math">V = 0</span>
+      in the solver. Used to terminate shunts (R, C, L to ground).</p>
+    </div>
+  </div>
+
+  <h4 id="elem-net-node">Net node</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="80" height="60" viewBox="0 0 80 60" xmlns="http://www.w3.org/2000/svg">
+        <line x1="0"  y1="30" x2="80" y2="30" stroke="#000" stroke-width="2"/>
+        <line x1="40" y1="30" x2="40" y2="0"  stroke="#000" stroke-width="2"/>
+        <line x1="40" y1="30" x2="40" y2="60" stroke="#000" stroke-width="2"/>
+        <circle cx="40" cy="30" r="4" fill="#000"/>
+      </svg>
+    </div>
+    <div>
+      <p>Multi-way wire junction. Lets you fan out one signal node to several blocks without crossing wires.
+      Electrically transparent.</p>
+    </div>
+  </div>
+
+  <h4 id="elem-port-se">Single-ended Port</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="120" height="60" viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="20" cy="30" r="8" fill="#fff" stroke="#0b4ea8" stroke-width="2"/>
+        <text x="20" y="34" text-anchor="middle" font-size="10" fill="#0b4ea8">P</text>
+        <line x1="28" y1="30" x2="120" y2="30" stroke="#000" stroke-width="2"/>
+      </svg>
+    </div>
+    <div>
+      <p>External port of the equivalent network. The block contributes one row/column to the exported S-matrix and
+      defines the reference impedance seen at that port.</p>
+      <ul>
+        <li><b>Port number</b>: index in the exported Touchstone file.</li>
+        <li><b>Reference impedance Z<sub>0</sub></b> [&Omega;]: defaults to 50.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h4 id="elem-port-diff">Differential Port</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="120" height="80" viewBox="0 0 120 80" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="20" cy="20" r="8" fill="#fff" stroke="#c0392b" stroke-width="2"/>
+        <text x="20" y="24" text-anchor="middle" font-size="9" fill="#c0392b">+</text>
+        <circle cx="20" cy="60" r="8" fill="#fff" stroke="#1e8449" stroke-width="2"/>
+        <text x="20" y="64" text-anchor="middle" font-size="9" fill="#1e8449">&minus;</text>
+        <line x1="28" y1="20" x2="120" y2="20" stroke="#000" stroke-width="2"/>
+        <line x1="28" y1="60" x2="120" y2="60" stroke="#000" stroke-width="2"/>
+      </svg>
+    </div>
+    <div>
+      <p>Pair of single-ended ports treated as a differential pair. The exported S-matrix contains both legs;
+      mode conversion (mixed-mode S) can be derived externally.</p>
+    </div>
+  </div>
+
+  <h4 id="elem-port-gnd">Port-Ground</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="120" height="60" viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+        <line x1="0"   y1="30" x2="60"  y2="30" stroke="#000" stroke-width="2"/>
+        <line x1="60"  y1="15" x2="60"  y2="45" stroke="#000" stroke-width="3"/>
+        <line x1="65"  y1="20" x2="65"  y2="40" stroke="#000" stroke-width="2"/>
+        <line x1="70"  y1="25" x2="70"  y2="35" stroke="#000" stroke-width="2"/>
+        <text x="90" y="34" font-size="10" fill="#0b4ea8">port-gnd</text>
+      </svg>
+    </div>
+    <div>
+      <p>Defines the ground reference of an external port (used when the source/load reference is not the global
+      circuit ground, e.g. floating shielded measurements).</p>
+    </div>
+  </div>
+
+  <h4 id="elem-driver-se">Driver (single-ended)</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="140" height="80" viewBox="0 0 140 80" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="20,15 20,65 90,40" fill="#eaf2ff" stroke="#0b4ea8" stroke-width="2"/>
+        <text x="45" y="44" font-size="11" fill="#003b84">DRV</text>
+        <line x1="90"  y1="40" x2="140" y2="40" stroke="#000" stroke-width="2"/>
+        <line x1="0"   y1="40" x2="20"  y2="40" stroke="#000" stroke-width="2"/>
+      </svg>
+    </div>
+    <div>
+      <p>Bit-stream voltage source used by the channel simulator. Only meaningful for channel simulations &mdash;
+      it does not contribute a passive admittance to the network solver, but its
+      <i>Source impedance</i> is used in the voltage transfer function (see &sect;9.5).</p>
+      <table>
+        <tr><th>Parameter</th><th>Meaning</th></tr>
+        <tr><td>V<sub>high</sub>, V<sub>low</sub> [V]</td><td>Logic levels of the transmitted NRZ stream.</td></tr>
+        <tr><td>Rise / Fall time [s]</td><td>10&ndash;90&nbsp;% transition times. Modelled with analytic Gaussian (erf) edges.</td></tr>
+        <tr><td>Bitrate [Gbps]</td><td>Line rate (after encoding when an encoder is selected).</td></tr>
+        <tr><td>PRBS pattern</td><td>Maximum-length LFSR (PRBS-7 &hellip; PRBS-31). See &sect;9.2.</td></tr>
+        <tr><td>Encoding</td><td>None / 8b10b / 64b66b / 128b130b / PAM4. See &sect;9.3.</td></tr>
+        <tr><td>Number of bits</td><td>Length of the generated stream before encoding.</td></tr>
+        <tr><td>Maximal Length LFSR</td><td>If on, exactly one full LFSR period (2<sup>N</sup>&minus;1 bits) is tiled to fill <i>num_bits</i>.</td></tr>
+        <tr><td>Random noise V<sub>rn</sub> [V]</td><td>RMS of an additive Gaussian voltage noise added at the receiver before measurement.</td></tr>
+        <tr><td>Source impedance Z<sub>src</sub> [&Omega;]</td><td>Thevenin impedance of the driver. Affects the voltage transfer function (see &sect;9.5).</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <h4 id="elem-driver-diff">Driver (differential)</h4>
+  <p>Same parameter set as the single-ended driver, but with two outputs in anti-phase. The differential voltage
+  <span class="math">V<sub>diff</sub> = V<sub>+</sub> &minus; V<sub>&minus;</sub></span> is what the eye-scope reads.</p>
+
+  <h4 id="elem-trans-step">Transient Step Source (single-ended)</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="140" height="70" viewBox="0 0 140 70" xmlns="http://www.w3.org/2000/svg">
+        <polyline points="0,55 50,55 65,15 140,15" fill="none" stroke="#0b4ea8" stroke-width="2"/>
+        <text x="70" y="65" text-anchor="middle" font-size="10">step</text>
+      </svg>
+    </div>
+    <div>
+      <ul>
+        <li><b>Amplitude</b> [V] and <b>Polarity</b> (Positive / Negative).</li>
+        <li><b>Rise / Fall time</b> [s]: 10&ndash;90&nbsp;%, modelled with erf edges.</li>
+        <li><b>Delay</b> [s]: time origin offset.</li>
+      </ul>
+      <p>Used by the transient simulator (&sect;10) to extract step responses.</p>
+    </div>
+  </div>
+
+  <h4 id="elem-trans-pulse">Transient Pulse Source (single-ended)</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="140" height="70" viewBox="0 0 140 70" xmlns="http://www.w3.org/2000/svg">
+        <polyline points="0,55 30,55 45,15 90,15 105,55 140,55" fill="none" stroke="#0b4ea8" stroke-width="2"/>
+        <text x="70" y="65" text-anchor="middle" font-size="10">pulse</text>
+      </svg>
+    </div>
+    <div>
+      <p>Same parameters as the step source plus <b>Pulse width</b> [s]. Useful for impulse-response approximation
+      and reflectometry-style probes.</p>
+    </div>
+  </div>
+
+  <h4 id="elem-scope-se">Scope (single-ended)</h4>
+  <div class="symbol-grid">
+    <div class="symbol-box">
+      <svg width="100" height="80" viewBox="0 0 100 80" xmlns="http://www.w3.org/2000/svg">
+        <rect x="15" y="10" width="70" height="50" rx="6" fill="#fcfdff" stroke="#0b4ea8" stroke-width="2"/>
+        <polyline points="20,40 35,40 40,25 60,55 65,40 80,40" fill="none" stroke="#0b4ea8" stroke-width="2"/>
+        <line x1="50" y1="60" x2="50" y2="80" stroke="#000" stroke-width="2"/>
+      </svg>
+    </div>
+    <div>
+      <p>Time-domain probe used by transient simulations. Records the voltage waveform at the connected node.</p>
+    </div>
+  </div>
+
+  <h4 id="elem-scope-diff">Scope (differential)</h4>
+  <p>Same as above, but records <span class="math">V<sub>+</sub> &minus; V<sub>&minus;</sub></span>.</p>
+
+  <h4 id="elem-eyescope-se">Eye-Scope (single-ended)</h4>
+  <p>Channel-simulation receiver. Folds the received waveform into UI segments and produces an eye diagram with
+  measurements (see &sect;9.7&ndash;9.8).</p>
+
+  <h4 id="elem-eyescope-diff">Eye-Scope (differential)</h4>
+  <p>Same as above on the differential signal.</p>
+
+  <h3 id="sec-circuit-solver">8.2 Network solver (Y / Z / S conversion)</h3>
+  <p>
+    For each frequency in the global sweep the editor builds an indefinite admittance matrix from
+    every component, then condenses it on the external port nodes. Touchstone blocks are first converted
+    from <b>S</b> to <b>Y</b> in their own reference impedance; lumped elements add their analytic
+    contribution; ideal grounds eliminate the corresponding row/column. The condensed Y is then converted
+    back to S using:
+  </p>
+  <div class="formula">S = (Y0 - Y) * inv(Y0 + Y)
+where  Y0 = diag(1 / Z0_k)</div>
+  <div class="figure">
+    <img src="images/network_export.svg" alt="Equivalent network export">
+    <div class="caption">From circuit graph to exported Touchstone model.</div>
+  </div>
+
+  <h3 id="sec-circuit-export">8.3 Equivalent network export</h3>
+  <ul>
+    <li>External ports are detected from dedicated port blocks and reordered by user-assigned port number.</li>
+    <li>The exported S-matrix is written to a Touchstone file in the selected format (RI / MA / DB) and frequency unit.</li>
+    <li>Validation runs before export: missing connections, dangling nodes, or empty sweep raise an error dialog.</li>
+  </ul>
+
+  <h2 id="sec-channel">9. Channel Simulation &amp; Eye Diagram <a class="back" href="#top">&uarr; top</a></h2>
+
+  <h3 id="sec-channel-pipeline">9.1 Pipeline overview</h3>
+  <ol>
+    <li>Build the equivalent S-matrix of the network (&sect;8.2).</li>
+    <li>Generate the raw bit stream from the selected PRBS (&sect;9.2) and apply encoding (&sect;9.3).</li>
+    <li>Render the bit stream as a smooth NRZ waveform with erf transitions (&sect;9.4).</li>
+    <li>Compute the voltage transfer function from driver to receiver including
+      driver source impedance and S<sub>11</sub> reflection (&sect;9.5).</li>
+    <li>Convolve the waveform with the impulse response of the transfer function (&sect;9.6).</li>
+    <li>Inject statistical perturbations (random voltage noise V<sub>rn</sub>, optional jitter).</li>
+    <li>Fold the waveform into UI-length segments and render the eye (&sect;9.7).</li>
+    <li>Compute the eye-summary metrics (&sect;9.8).</li>
+  </ol>
+
+  <h3 id="sec-channel-prbs">9.2 PRBS generators</h3>
+  <p>
+    PRBS streams are generated with a <b>Fibonacci LFSR</b> in shift-LEFT canonical form, all-ones seed.
+    The taps used are the standard maximum-length polynomials:
+  </p>
+  <table>
+    <tr><th>Pattern</th><th>Taps (bit positions)</th><th>Period</th></tr>
+    <tr><td>PRBS-7</td><td>[7, 6]</td><td>127</td></tr>
+    <tr><td>PRBS-8</td><td>[8, 6, 5, 4]</td><td>255</td></tr>
+    <tr><td>PRBS-9</td><td>[9, 5]</td><td>511</td></tr>
+    <tr><td>PRBS-10</td><td>[10, 7]</td><td>1023</td></tr>
+    <tr><td>PRBS-11</td><td>[11, 9]</td><td>2047</td></tr>
+    <tr><td>PRBS-12</td><td>[12, 11, 10, 4]</td><td>4095</td></tr>
+    <tr><td>PRBS-13</td><td>[13, 12, 2, 1]</td><td>8191</td></tr>
+    <tr><td>PRBS-15</td><td>[15, 14]</td><td>32767</td></tr>
+    <tr><td>PRBS-20</td><td>[20, 17]</td><td>1&nbsp;048&nbsp;575</td></tr>
+    <tr><td>PRBS-23</td><td>[23, 18]</td><td>8&nbsp;388&nbsp;607</td></tr>
+    <tr><td>PRBS-31</td><td>[31, 28]</td><td>2&nbsp;147&nbsp;483&nbsp;647</td></tr>
+  </table>
+  <p>
+    A maximum-length sequence has exactly <span class="math">2<sup>N&minus;1</sup></span> ones,
+    <span class="math">2<sup>N&minus;1</sup>&minus;1</span> zeros, longest run of N ones and N&minus;1 zeros.
+    With the <b>Maximal Length LFSR</b> option enabled, exactly one full period is generated
+    and tiled until the requested <i>num_bits</i> is reached, replicating the ADS Bit Source convention.
+  </p>
+
+  <h3 id="sec-channel-encoding">9.3 8b/10b encoder (running disparity)</h3>
+  <p>
+    A full Widmer-Franaszek 8b/10b D-character encoder is implemented (IEEE 802.3 Cl.36 tables 36-1 and 36-2).
+    The bit stream is grouped into bytes LSB-first; each byte is split into a 5-bit (EDCBA)
+    and a 3-bit (HGF) sub-block, mapped through the 5b/6b and 3b/4b lookup tables. The current
+    <b>running disparity</b> selects the RD&minus; or RD+ codeword and is updated by the codeword's own disparity.
+    The alternate D.x.A7 form is used to suppress 5-in-a-row across the 6b/4b boundary.
+  </p>
+  <ul>
+    <li>Output length: <span class="math">&lceil;N/8&rceil; &middot; 10</span> bits (zero-padded last byte if needed).</li>
+    <li>Maximum run length on the wire: 5.</li>
+    <li>DC balance: the long-term average is exactly 0.5 (perfect).</li>
+    <li>Bitrate convention: the value entered in the UI is the <b>line rate</b>, i.e. the rate after encoding.</li>
+  </ul>
+  <div class="note">
+    64b/66b and 128b/130b are currently <b>no-ops</b> (the bit stream is passed through unchanged); a real
+    implementation would add a self-synchronous scrambler with polynomial
+    <span class="math">x<sup>58</sup>+x<sup>39</sup>+1</span> and 2-bit sync header. PAM4 affects only the eye level count.
+  </div>
+
+  <h3 id="sec-channel-nrz">9.4 NRZ waveform with erf edges</h3>
+  <p>
+    Each bit boundary is rendered with an analytic Gaussian (erf) step centred on the boundary, scaled by
+    the symbol delta. This is the IEEE 802.3 COM convention for finite-rise NRZ stimuli and is significantly more
+    accurate than convolving an ideal rectangular waveform with a moving average. Per-edge cost is
+    <span class="math">O(samples_per_bit)</span>.
+  </p>
+  <div class="formula">tr (10-90%) = 2 * sqrt(2) * erfinv(0.8) * sigma  ~=  2.5631 * sigma
+edge(t)     = 0.5 * (V_high + V_low) + 0.5 * delta * erf((t - t_edge) / (sqrt(2) * sigma))</div>
+
+  <h3 id="sec-channel-htf">9.5 Voltage transfer function (Z<sub>src</sub> + S<sub>11</sub>)</h3>
+  <p>
+    A standard S-parameter file describes power waves between matched ports. To convert it into a
+    voltage transfer function from a non-ideal driver to a matched probe we have to account for both
+    the source impedance mismatch and the reflection back from the network input port:
+  </p>
+  <div class="formula">H(f) = S21(f) * sqrt(Z0_out * Z0_in)
+       -------------------------------------------------------
+        (Z0_in + Z_src) + S11(f) * (Z0_in - Z_src)</div>
+  <p>
+    When <span class="math">Z<sub>src</sub> = Z<sub>0,in</sub></span> the denominator collapses to
+    <span class="math">2&middot;Z<sub>0,in</sub></span> and we recover the conventional matched-source voltage transfer.
+    With <span class="math">Z<sub>src</sub> &ne; Z<sub>0,in</sub></span> the network input reflection
+    <span class="math">S<sub>11</sub></span> reshapes the transfer because the wave that bounces back interferes
+    with the incident wave at the source.
+  </p>
+
+  <h3 id="sec-channel-conv">9.6 Convolution with impulse response</h3>
+  <p>
+    Once <span class="math">H(f)</span> is known on a uniform spectrum, the impulse response
+    <span class="math">h(t)</span> is obtained by inverse real FFT and the receiver waveform is
+    the linear convolution of the transmitted waveform with <span class="math">h(t)</span>:
+  </p>
+  <div class="formula">h(t)      = F^-1 { H(f) }              (impulse response)
+y(t)      = (x * h)(t) = integral x(tau) * h(t - tau) d tau</div>
+  <p>
+    The convolution is computed with <code>scipy.signal.fftconvolve</code> (overlap-add FFT) for O(N log N) cost.
+    The number of impulse-response samples is sized to capture the first
+    <span class="math">~10/&pi;f<sub>min</sub></span> seconds of the response so that low-frequency
+    truncation error stays below 1&permil;.
+  </p>
+
+  <h3 id="sec-channel-eye">9.7 Eye folding &amp; jitter injection</h3>
+  <ol>
+    <li>The waveform is split into segments of length <span class="math">UI = 1 / Bitrate</span>.
+        A symmetric two-UI window centred on the decision instant is plotted.</li>
+    <li>Optional Gaussian voltage noise of RMS V<sub>rn</sub> is added to every sample.</li>
+    <li>Optional Gaussian timing jitter is applied as a per-segment time offset
+        (<span class="math">jitter_samples = jitter_rms_ps &middot; 10<sup>&minus;12</sup> / dt</span>).</li>
+    <li>The decision phase is aligned by maximizing the eye opening centred at <span class="math">t = 0</span>.</li>
+    <li>Rendering quality preset (Fast / Balanced / HighRes) controls the heatmap resolution.</li>
+  </ol>
+
+  <h3 id="sec-channel-meas">9.8 Measurements</h3>
+  <ul>
+    <li><b>One Level / Zero Level</b>: medians of upper / lower amplitude clusters around the decision center.</li>
+    <li><b>Eye Amplitude</b>: One Level &minus; Zero Level.</li>
+    <li><b>Eye Height</b>: vertical opening at decision center using percentile envelopes.</li>
+    <li><b>Eye Width</b>: contiguous open interval around center, reported in ps.</li>
+    <li><b>Eye Crossing</b>: crossing level measured around &plusmn;0.5 UI and normalized to Eye Amplitude (%).</li>
+    <li><b>RJ(&sigma;)</b>: random-jitter standard deviation extracted from the crossing distribution.</li>
+    <li><b>DJ(pp)</b>: deterministic-jitter peak-to-peak from the bimodal histogram fit.</li>
+    <li><b>TJ(pp)@BER</b>: total jitter at the configured bit-error rate combining DJ and Q&middot;RJ.</li>
+  </ul>
+  <div class="formula">EyeAmplitude = OneLevel - ZeroLevel
+EyeHeight = p5(upper) - p95(lower) at decision center
+EyeWidth_UI = open_samples / samples_per_UI
+EyeWidth_ps = EyeWidth_UI * UI * 1e12
+EyeCrossing_pct = 100 * (CrossingLevel - ZeroLevel) / EyeAmplitude
+TJ(pp)@BER = DJ(pp) + 2 * Q(BER) * RJ_sigma</div>
+  <div class="figure">
+    <img src="images/eye_measurements.svg" alt="Eye measurements">
+    <div class="caption">Eye measurement geometry used by the summary panel.</div>
+  </div>
+
+  <h2 id="sec-transient">10. Transient Simulation (Step / Pulse Sources) <a class="back" href="#top">&uarr; top</a></h2>
+  <p>
+    Transient simulations use the same frequency-domain solve as the channel pipeline but excite the network
+    with a deterministic step or pulse stimulus from a transient source block. The procedure is:
+  </p>
+  <ol>
+    <li>Build the equivalent S-matrix at every sweep frequency.</li>
+    <li>Compute the voltage transfer function from the source port to every scope port (same denominator as &sect;9.5,
+        with the source impedance defaulting to the port reference impedance).</li>
+    <li>Inverse-FFT to obtain the impulse response <span class="math">h(t)</span>.</li>
+    <li>Convolve the source stimulus (step or pulse) with <span class="math">h(t)</span>.</li>
+    <li>Apply optional Gaussian smoothing matching the requested rise time.</li>
+  </ol>
+  <p>The resulting waveform is shown in the Transient window and can be saved as part of the project.</p>
+
+  <h2 id="sec-project">11. Project Files <a class="back" href="#top">&uarr; top</a></h2>
+  <p>A saved project stores:</p>
+  <ul>
+    <li>Loaded file paths.</li>
+    <li>Plot, TDR, and circuit windows with their settings, sizes, and saved output references.</li>
+    <li>Selected traces, legend labels, hidden plot-local files, and per-window configuration.</li>
+    <li>Generated outputs such as exported circuit models and saved eye snapshots.</li>
+  </ul>
+  <p>
+    When an exported project is reopened, relative source paths inside the export bundle are resolved against the
+    exported project folder automatically.
+  </p>
+
+  <h2 id="sec-notes">12. Notes &amp; Troubleshooting <a class="back" href="#top">&uarr; top</a></h2>
+  <ul>
+    <li>If a saved project references missing files, loading proceeds with warnings.</li>
+    <li>You are prompted before closing when the project has unsaved changes.</li>
+    <li>If a TDR plot shows excessive ringing, increase the upper frequency or use a stronger taper window.</li>
+    <li>If an eye diagram looks collapsed, verify the driver V<sub>high</sub>/V<sub>low</sub> levels and the source impedance,
+        and check that <i>Bitrate</i> matches the transmitter under analysis.</li>
+    <li>If 64b/66b or 128b/130b encoding is required for bit-exact replication, note that the current build implements only
+        the 8b/10b code; higher-rate scramblers can be added on request.</li>
+  </ul>
+</body>
+</html>
