@@ -39,6 +39,13 @@ _TLINE_KIND_TO_LINE_KIND = {
     "taper": "taper",
 }
 
+# Kinds that are "infrastructure" (not RF signal carriers) — ignored for chain detection.
+_NON_SIGNAL_KINDS: frozenset[str] = frozenset({
+    "port_ground", "port_diff", "gnd", "driver_se", "driver_diff",
+    "eyescope_se", "eyescope_diff", "scope_se", "scope_diff",
+    "net_node", "substrate", "substrate_stripline",
+})
+
 # Required substrate kind per tline block-kind. "taper" accepts either,
 # so it is intentionally absent from this mapping (handled in _stamp_tline).
 _TLINE_REQUIRED_SUBSTRATE_KIND = {
@@ -57,6 +64,7 @@ class CircuitSolveResult:
     frequencies_hz: np.ndarray
     s_matrices: np.ndarray  # shape (nfreq, nports, nports)
     z0_ohm: np.ndarray  # shape (nports,)
+    solve_engine: str = "mna"
     passivity: "PassivityDiagnostic | None" = None
 
 
@@ -105,7 +113,320 @@ class _TouchstoneInterpolationCache:
     imag_interpolator: Any | None = None
 
 
-def solve_circuit_network(document: CircuitDocument, state: AppState) -> CircuitSolveResult:
+# ---------------------------------------------------------------------------
+# T-Cascade engine (scikit-rf based, default for pure Touchstone chains)
+# ---------------------------------------------------------------------------
+
+def _try_chain_cascade(document: CircuitDocument, state: AppState) -> "CircuitSolveResult | None":
+    """Solve a pure Touchstone chain using T-Cascade via scikit-rf.
+
+    Returns a CircuitSolveResult when the circuit is a linear chain of Touchstone
+    blocks with no lumped elements or transmission lines.  Returns None in all
+    other cases so that the caller can fall back to the MNA solver.
+
+    This engine avoids the shared-ground coupling that the MNA solver introduces
+    when multiple multiport S-parameter blocks are stamped into a single nodal
+    admittance matrix, which causes common-mode resonances to contaminate
+    differential-mode through-paths (the main discrepancy vs pure T-Cascade tools).
+    """
+    try:
+        import skrf as rf
+        from skrf.network import cascade as _skrf_cascade
+        from skrf.network import subnetwork as _skrf_subnetwork
+    except ImportError:
+        return None
+
+    # Differential-mode output not yet implemented for chain cascade.
+    if document.differential_ports:
+        return None
+
+    se_assignments = sorted(document.external_ports, key=lambda a: a.external_port_number)
+    if not se_assignments:
+        return None
+
+    inst_map: Dict[str, Any] = {inst.instance_id: inst for inst in document.instances}
+
+    # ---- Identify signal instances -------------------------------------------
+    signal_insts = [
+        inst for inst in document.instances
+        if inst.block_kind not in _NON_SIGNAL_KINDS
+    ]
+    if not signal_insts:
+        return None
+
+    # All signal blocks must be Touchstone (no lumped / tline / attenuator / …).
+    if not all(inst.block_kind == "touchstone" for inst in signal_insts):
+        return None
+
+    # A single-block circuit has no shared-ground issue — let MNA handle it.
+    if len(signal_insts) < 2:
+        return None
+
+    sig_ids: set[str] = {inst.instance_id for inst in signal_insts}
+
+    # ---- Inter-signal adjacency ----------------------------------------------
+    sig_adj: Dict[str, set] = {iid: set() for iid in sig_ids}
+    sig_port_adj: Dict[Tuple[str, int], List[Tuple[str, int]]] = {}
+
+    for conn in document.connections:
+        a_key = conn.port_a.key()
+        b_key = conn.port_b.key()
+        a_sig = a_key[0] in sig_ids
+        b_sig = b_key[0] in sig_ids
+        if a_sig and b_sig:
+            sig_adj[a_key[0]].add(b_key[0])
+            sig_adj[b_key[0]].add(a_key[0])
+            sig_port_adj.setdefault(a_key, []).append(b_key)
+            sig_port_adj.setdefault(b_key, []).append(a_key)
+
+    # ---- Verify linear chain (no fan-out, no cycles) -------------------------
+    degrees = {iid: len(neighbors) for iid, neighbors in sig_adj.items()}
+    if any(deg > 2 for deg in degrees.values()):
+        return None  # Fan-out: not a simple chain
+
+    endpoints = [iid for iid, deg in degrees.items() if deg <= 1]
+    if len(endpoints) != 2:
+        return None  # Cycle or disconnected sub-graphs
+
+    # Trace path from one endpoint to the other.
+    chain_ids: List[str] = []
+    visited_set: set[str] = set()
+    current = endpoints[0]
+    while True:
+        chain_ids.append(current)
+        visited_set.add(current)
+        nxt = sig_adj[current] - visited_set
+        if not nxt:
+            break
+        if len(nxt) > 1:
+            return None  # Should not happen given degree check above
+        current = next(iter(nxt))
+
+    if set(chain_ids) != sig_ids:
+        return None  # Disconnected sub-graph
+
+    chain_instances = [inst_map[iid] for iid in chain_ids]
+
+    # ---- Per-block port classification ---------------------------------------
+    # left_ports[i]  = 0-based port indices connecting toward chain[i-1]
+    # right_ports[i] = 0-based port indices connecting toward chain[i+1]
+    # free_ports[i]  = ports not connected to any other signal block
+    left_ports_list: List[List[int]] = []
+    right_ports_list: List[List[int]] = []
+    free_ports_list: List[List[int]] = []
+
+    for i, inst in enumerate(chain_instances):
+        prev_id = chain_ids[i - 1] if i > 0 else None
+        next_id = chain_ids[i + 1] if i < len(chain_ids) - 1 else None
+        lp: List[int] = []
+        rp: List[int] = []
+        fp: List[int] = []
+        for port_num in range(1, inst.nports + 1):
+            port_key = (inst.instance_id, port_num)
+            connected = sig_port_adj.get(port_key, [])
+            connects_prev = prev_id is not None and any(c[0] == prev_id for c in connected)
+            connects_next = next_id is not None and any(c[0] == next_id for c in connected)
+            if connects_prev:
+                lp.append(port_num - 1)
+            elif connects_next:
+                rp.append(port_num - 1)
+            else:
+                fp.append(port_num - 1)
+        left_ports_list.append(sorted(lp))
+        right_ports_list.append(sorted(rp))
+        free_ports_list.append(sorted(fp))
+
+    # Middle blocks must have no free ports.
+    for i in range(1, len(chain_ids) - 1):
+        if free_ports_list[i]:
+            return None
+
+    first_id = chain_ids[0]
+    last_id = chain_ids[-1]
+    first_free = free_ports_list[0]   # input-facing ports of first block
+    last_free = free_ports_list[-1]   # output-facing ports of last block
+
+    # ---- Resolve external port assignments → signal port keys ----------------
+    ext_port_to_block_port: Dict[int, Tuple[str, int]] = {}
+    for assignment in se_assignments:
+        ref_key = assignment.port_ref.key()
+        ref_inst = inst_map.get(ref_key[0])
+        if ref_inst is None:
+            return None
+        if ref_inst.block_kind in _NON_SIGNAL_KINDS:
+            # Walk the wire from the external-port block to the signal block.
+            target: "Tuple[str, int] | None" = None
+            for conn in document.connections:
+                a, b = conn.port_a.key(), conn.port_b.key()
+                if a == ref_key and b[0] in sig_ids:
+                    target = b
+                    break
+                if b == ref_key and a[0] in sig_ids:
+                    target = a
+                    break
+            if target is None:
+                return None
+            ref_key = target
+        if ref_key[0] not in (first_id, last_id):
+            return None  # External port on an intermediate block → not a pure chain
+        ext_port_to_block_port[assignment.external_port_number] = ref_key
+
+    # ---- Build canonical port permutations -----------------------------------
+    # Canonical order: [input-side ports (sorted), output-side ports (sorted)]
+    permutations: List[List[int]] = []
+    for i, inst in enumerate(chain_instances):
+        if i == 0:
+            input_side = first_free
+            output_side = right_ports_list[i]
+        elif i == len(chain_ids) - 1:
+            input_side = left_ports_list[i]
+            output_side = last_free
+        else:
+            input_side = left_ports_list[i]
+            output_side = right_ports_list[i]
+        perm = input_side + output_side
+        if len(perm) != inst.nports or set(perm) != set(range(inst.nports)):
+            return None
+        permutations.append(perm)
+
+    # ---- Load Touchstone data as skrf.Network objects ------------------------
+    networks: List[Any] = []
+    for inst, perm in zip(chain_instances, permutations):
+        loaded = state.get_file(inst.source_file_id)
+        if loaded is None:
+            return None
+        points = loaded.data.points
+        if not points:
+            return None
+        freqs_hz = np.array([p.frequency_hz for p in points], dtype=float)
+        nports = loaded.data.nports
+        s_cube = np.zeros((len(points), nports, nports), dtype=np.complex128)
+        for f_idx, point in enumerate(points):
+            for row in range(nports):
+                for col in range(nports):
+                    s_cube[f_idx, row, col] = point.s_matrix[row][col].complex_value
+        freq_obj = rf.Frequency.from_f(freqs_hz, unit="Hz")
+        nw = rf.Network(frequency=freq_obj, s=s_cube, name=inst.display_label)
+        if perm != list(range(nports)):
+            nw = _skrf_subnetwork(nw, perm)
+        networks.append(nw)
+
+    if not networks:
+        return None
+
+    # ---- Cascade all networks on intersection frequency grid -----------------
+    result_nw = networks[0]
+    for nw in networks[1:]:
+        f_common = np.intersect1d(result_nw.f, nw.f)
+        if f_common.size < 2:
+            return None  # Insufficient overlap — fall back to MNA
+        target_freq = rf.Frequency.from_f(f_common, unit="Hz")
+        a_i = result_nw.interpolate(target_freq, kind="linear",
+                                    fill_value="extrapolate", bounds_error=False)
+        b_i = nw.interpolate(target_freq, kind="linear",
+                             fill_value="extrapolate", bounds_error=False)
+        result_nw = _skrf_cascade(a_i, b_i)
+
+    # ---- Map cascade result ports → se_assignments order --------------------
+    n_left = len(first_free)
+    n_right = len(last_free)
+    n_result = n_left + n_right
+    if result_nw.nports != n_result:
+        return None
+
+    # cascade result port index for each (instance_id, 1-based port number)
+    block_port_to_result_idx: Dict[Tuple[str, int], int] = {}
+    for k, p_idx in enumerate(first_free):
+        block_port_to_result_idx[(first_id, p_idx + 1)] = k
+    for k, p_idx in enumerate(last_free):
+        block_port_to_result_idx[(last_id, p_idx + 1)] = n_left + k
+
+    reorder: List[int] = []
+    for assignment in se_assignments:
+        bp = ext_port_to_block_port.get(assignment.external_port_number)
+        if bp is None or bp not in block_port_to_result_idx:
+            return None
+        reorder.append(block_port_to_result_idx[bp])
+
+    s_raw = result_nw.s  # (nfreq, n_result, n_result)
+    ro = np.array(reorder, dtype=int)
+    s_reordered = s_raw[np.ix_(np.arange(s_raw.shape[0]), ro, ro)]
+
+    # ---- Resample to document frequency grid --------------------------------
+    doc_freqs = _build_frequency_grid(document)
+    if doc_freqs.size > 1 and not np.array_equal(result_nw.f, doc_freqs):
+        from scipy.interpolate import interp1d as _interp1d
+        n_se = s_reordered.shape[1]
+        s_doc = np.zeros((doc_freqs.size, n_se, n_se), dtype=np.complex128)
+        f_src = result_nw.f
+        for row in range(n_se):
+            for col in range(n_se):
+                s_doc[:, row, col] = (
+                    _interp1d(f_src, s_reordered[:, row, col].real, kind="linear",
+                              bounds_error=False, fill_value="extrapolate")(doc_freqs)
+                    + 1j * _interp1d(f_src, s_reordered[:, row, col].imag, kind="linear",
+                                     bounds_error=False, fill_value="extrapolate")(doc_freqs)
+                )
+        freqs_out = doc_freqs
+        s_out = s_doc
+    else:
+        freqs_out = result_nw.f
+        s_out = s_reordered
+
+    # ---- Port impedances (from external port block's impedance_ohm) ----------
+    z0_out = np.full(len(se_assignments), 50.0, dtype=float)
+    for i, assignment in enumerate(se_assignments):
+        ref_inst = inst_map.get(assignment.port_ref.instance_id)
+        if ref_inst is not None:
+            z0 = float(getattr(ref_inst, "impedance_ohm", 50.0))
+            if z0 > 0.0:
+                z0_out[i] = z0
+
+    return CircuitSolveResult(
+        nports=len(se_assignments),
+        frequencies_hz=freqs_out,
+        s_matrices=s_out,
+        z0_ohm=z0_out,
+        solve_engine="t_cascade",
+        passivity=_analyze_passivity(freqs_out, s_out),
+    )
+
+
+def solve_circuit_network(
+    document: CircuitDocument,
+    state: AppState,
+    solver_preference: str = "auto",
+) -> CircuitSolveResult:
+    return _solve_circuit_network_with_preference(
+        document,
+        state,
+        solver_preference=solver_preference,
+    )
+
+
+def _solve_circuit_network_with_preference(
+    document: CircuitDocument,
+    state: AppState,
+    solver_preference: str = "auto",
+) -> CircuitSolveResult:
+    pref = str(solver_preference or "auto").strip().lower()
+    if pref not in {"auto", "t_cascade", "mna"}:
+        raise ValueError(
+            "Unsupported solver preference. Expected one of: auto, t_cascade, mna."
+        )
+
+    # --- T-Cascade selection ---------------------------------------------------
+    if pref in {"auto", "t_cascade"}:
+        chain_result = _try_chain_cascade(document, state)
+        if chain_result is not None:
+            return chain_result
+        if pref == "t_cascade":
+            raise ValueError(
+                "T-Cascade solver was forced, but the circuit is not eligible. "
+                "Use a pure linear Touchstone chain or switch to Auto/MNA."
+            )
+
+    # --- MNA fallback (mixed lumped + Touchstone circuits) --------------------
     frequencies = _build_frequency_grid(document)
     if frequencies.size == 0:
         raise ValueError("Sweep has no valid frequency points.")
@@ -248,6 +569,7 @@ def solve_circuit_network(document: CircuitDocument, state: AppState) -> Circuit
         frequencies_hz=frequencies,
         s_matrices=s_out,
         z0_ohm=z0_out,
+        solve_engine="mna",
         passivity=_analyze_passivity(frequencies, s_out),
     )
 
@@ -1206,10 +1528,15 @@ def _solve_transfer_path(
     state: AppState,
     source_instance_id: str,
     output_refs: Sequence[CircuitPortRef],
+    solver_preference: str = "auto",
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> _SolvedTransferPath:
     _emit_progress(progress_callback, 5, "Solving S-parameter network...")
-    result = solve_circuit_network(document, state)
+    result = solve_circuit_network(
+        document,
+        state,
+        solver_preference=solver_preference,
+    )
 
     source_port_idx = _find_port_index(document, source_instance_id, 1)
     if source_port_idx is None:
@@ -1681,6 +2008,7 @@ def simulate_channel(
     driver_instance_id: str,
     output_port_instance_id: str,
     output_port_number: int = 1,
+    solver_preference: str = "auto",
     progress_callback: callable | None = None,
 ) -> ChannelSimResult:
     driver_inst = document.get_instance(driver_instance_id)
@@ -1695,7 +2023,8 @@ def simulate_channel(
         state,
         driver_instance_id,
         [CircuitPortRef(output_port_instance_id, output_port_number)],
-        progress_callback,
+        solver_preference=solver_preference,
+        progress_callback=progress_callback,
     )
     out_port_idx = transfer_path.output_port_indices[0]
     freq_hz = transfer_path.solve_result.frequencies_hz
@@ -1791,6 +2120,7 @@ def simulate_transient(
     source_instance_id: str,
     output_refs: Sequence[CircuitPortRef],
     stop_time_s: float,
+    solver_preference: str = "auto",
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> TransientSimResult:
     source_inst = document.get_instance(source_instance_id)
@@ -1813,7 +2143,8 @@ def simulate_transient(
         state,
         source_instance_id,
         output_refs,
-        progress_callback,
+        solver_preference=solver_preference,
+        progress_callback=progress_callback,
     )
     if is_driver_source:
         driver_spec = source_inst.driver_spec

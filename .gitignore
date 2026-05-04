@@ -22,3 +22,12 @@ env/
 # OS
 Thumbs.db
 .DS_Store
+
+# Touchstone S-parameter data files (sample/test data, not tracked in repo)
+*.s2p
+*.s4p
+*.s8p
+*.s22p
+*.S2P
+*.S4P
+*.S8P

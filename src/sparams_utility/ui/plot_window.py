@@ -64,10 +64,18 @@ class PlotWindow(QMainWindow):
         self._row_to_fid: List[str] = []            # row index -> file_id
         self._legend_offset = (10.0, 10.0)
         self._settings = PlotSettings()
+        self._marker_positions: List[float] = []
+        self._marker_lines: List[pg.InfiniteLine] = []
 
         settings_menu = self.menuBar().addMenu("Settings")
         settings_action = settings_menu.addAction("Plot settings")
         settings_action.triggered.connect(self._open_settings_dialog)
+
+        markers_menu = self.menuBar().addMenu("Markers")
+        add_marker_action = markers_menu.addAction("Add marker at center")
+        add_marker_action.triggered.connect(self._add_marker_at_center)
+        clear_markers_action = markers_menu.addAction("Clear all markers")
+        clear_markers_action.triggered.connect(self._clear_all_markers)
 
         # ── Plot widget ───────────────────────────────────────────────────
         self._plot_widget = pg.PlotWidget()
@@ -90,6 +98,8 @@ class PlotWindow(QMainWindow):
         pi.showAxes(True, showValues=(True, False, False, True))
 
         self._legend = self._plot_widget.addLegend(offset=self._legend_offset)
+
+        self._plot_widget.scene().sigMouseClicked.connect(self._on_plot_scene_clicked)
 
         # ── Selection table ───────────────────────────────────────────────
         # Col 0 = File (read-only) | Col 1 = Label (editable) | Col 2..N = traces
@@ -364,7 +374,116 @@ class PlotWindow(QMainWindow):
 
             self._set_legend_offset(self._legend_offset)
 
+        self._rebuild_markers()
         self._apply_ranges()
+
+    # ── Marker support ────────────────────────────────────────────────────
+
+    def _on_plot_scene_clicked(self, event) -> None:
+        if not event.double():
+            return
+        vb = self._plot_widget.getPlotItem().vb
+        if not vb.sceneBoundingRect().contains(event.scenePos()):
+            return
+        pos = vb.mapSceneToView(event.scenePos())
+        self._marker_positions.append(pos.x())
+        self._rebuild_markers()
+
+    def _add_marker_at_center(self) -> None:
+        vb = self._plot_widget.getPlotItem().vb
+        x_range = vb.viewRange()[0]
+        x = (x_range[0] + x_range[1]) / 2.0
+        self._marker_positions.append(x)
+        self._rebuild_markers()
+
+    def _clear_all_markers(self) -> None:
+        self._marker_positions.clear()
+        self._rebuild_markers()
+
+    def _remove_marker(self, line: pg.InfiniteLine) -> None:
+        plot_item = self._plot_widget.getPlotItem()
+        if line in self._marker_lines:
+            idx = self._marker_lines.index(line)
+            if idx < len(self._marker_positions):
+                self._marker_positions.pop(idx)
+        try:
+            plot_item.removeItem(line)
+        except Exception:
+            pass
+        self._rebuild_markers()
+
+    def _rebuild_markers(self) -> None:
+        plot_item = self._plot_widget.getPlotItem()
+        for line in self._marker_lines:
+            try:
+                plot_item.removeItem(line)
+            except Exception:
+                pass
+        self._marker_lines.clear()
+
+        for i, x_pos in enumerate(self._marker_positions):
+            label_text = self._format_marker_label(x_pos)
+            line = pg.InfiniteLine(
+                pos=x_pos,
+                angle=90,
+                movable=True,
+                pen=pg.mkPen(color="#e6550d", width=1.5, style=Qt.PenStyle.DashLine),
+                label=label_text,
+                labelOpts={
+                    "position": 0.97,
+                    "color": "#e6550d",
+                    "fill": pg.mkBrush(255, 255, 255, 200),
+                    "border": pg.mkPen(color="#e6550d", width=0.8),
+                    "movable": True,
+                },
+            )
+
+            def _on_pos_changed(ln=line, index=i) -> None:
+                x = ln.value()
+                if index < len(self._marker_positions):
+                    self._marker_positions[index] = x
+                ln.label.setFormat(self._format_marker_label(x))
+
+            def _on_clicked(ln=line, ev=None) -> None:
+                try:
+                    button = ev.button() if ev is not None else None
+                except Exception:
+                    button = None
+                if button == Qt.RightButton:
+                    self._remove_marker(ln)
+
+            line.sigPositionChanged.connect(_on_pos_changed)
+            line.sigClicked.connect(lambda ln, ev, _ln=line: _on_clicked(_ln, ev))
+            plot_item.addItem(line)
+            self._marker_lines.append(line)
+
+    def _format_marker_label(self, x_hz: float) -> str:
+        if abs(x_hz) >= 1e9:
+            x_str = f"f = {x_hz / 1e9:.4f} GHz"
+        elif abs(x_hz) >= 1e6:
+            x_str = f"f = {x_hz / 1e6:.4f} MHz"
+        elif abs(x_hz) >= 1e3:
+            x_str = f"f = {x_hz / 1e3:.4f} kHz"
+        else:
+            x_str = f"f = {x_hz:.4f} Hz"
+
+        lines = [x_str]
+        for loaded in self._visible_loaded_files():
+            selected = sorted(self._selected_traces.get(loaded.file_id, set()))
+            if not selected:
+                continue
+            legend_label = self._labels.get(loaded.file_id, loaded.display_name)
+            frequencies = np.array(
+                loaded.data.magnitude_table.frequencies_hz, dtype=float
+            )
+            for trace in selected:
+                values = np.array(
+                    loaded.data.magnitude_table.traces_db[trace], dtype=float
+                )
+                if frequencies.size > 0:
+                    y = float(np.interp(x_hz, frequencies, values))
+                    lines.append(f"{legend_label} - {trace}: {y:.3f} dB")
+        return "\n".join(lines)
 
     def _apply_ranges(self) -> None:
         vb = self._plot_widget.getPlotItem().vb

@@ -631,7 +631,9 @@ class MainWindowTreeIconTests(unittest.TestCase):
             project_path = Path(tmpdir) / "DemoProject.json"
             used_path, unused_path, data_dir = self._configure_exportable_project(project_path)
 
-            export_dir, export_project_path, export_zip_path, export_warnings = self.window._build_export_project_bundle(project_path)
+            export_dir, export_project_path, export_zip_path, export_warnings = self.window._build_export_project_bundle(
+                project_path, cleanup_export_dir=False
+            )
 
             self.assertEqual(export_warnings, [])
             self.assertTrue(export_dir.exists())
@@ -667,7 +669,9 @@ class MainWindowTreeIconTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             project_path = Path(tmpdir) / "DemoProject.json"
             used_path, _unused_path, _data_dir = self._configure_exportable_project(project_path)
-            export_dir, export_project_path, _export_zip_path, _warnings = self.window._build_export_project_bundle(project_path)
+            export_dir, export_project_path, _export_zip_path, _warnings = self.window._build_export_project_bundle(
+                project_path, cleanup_export_dir=False
+            )
 
             loaded_window = MainWindow(AppState())
             try:
@@ -687,3 +691,55 @@ class MainWindowTreeIconTests(unittest.TestCase):
             finally:
                 loaded_window._project_dirty = False
                 loaded_window.close()
+
+    def test_build_export_project_bundle_cleans_up_staging_dir(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "DemoProject.json"
+            self._configure_exportable_project(project_path)
+
+            export_dir, _export_project_path, export_zip_path, _warnings = (
+                self.window._build_export_project_bundle(project_path, cleanup_export_dir=True)
+            )
+
+            self.assertFalse(export_dir.exists(), "Staging export folder should be removed")
+            self.assertTrue(export_zip_path.exists(), "ZIP archive must remain")
+
+    def test_build_export_project_bundle_uses_custom_zip_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "DemoProject.json"
+            self._configure_exportable_project(project_path)
+            custom_zip = Path(tmpdir) / "out" / "MyExport.zip"
+
+            _export_dir, _export_project_path, export_zip_path, _warnings = (
+                self.window._build_export_project_bundle(
+                    project_path, target_zip_path=custom_zip, cleanup_export_dir=True
+                )
+            )
+
+            self.assertEqual(export_zip_path.resolve(), custom_zip.resolve())
+            self.assertTrue(custom_zip.exists())
+
+    def test_build_export_project_bundle_skips_missing_when_resolver_returns_none(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "DemoProject.json"
+            used_path, _unused_path, _data_dir = self._configure_exportable_project(project_path)
+            # Delete the referenced source file to simulate a missing input.
+            used_path.unlink()
+
+            calls: list[str] = []
+
+            def resolver(missing: str) -> str | None:
+                calls.append(missing)
+                return None
+
+            _export_dir, _export_project_path, export_zip_path, warnings = (
+                self.window._build_export_project_bundle(
+                    project_path,
+                    missing_file_resolver=resolver,
+                    cleanup_export_dir=True,
+                )
+            )
+
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(export_zip_path.exists())
+            self.assertTrue(any("skipped" in w.lower() for w in warnings))

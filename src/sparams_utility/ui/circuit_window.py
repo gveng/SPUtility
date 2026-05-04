@@ -3783,6 +3783,13 @@ class CircuitWindow(QMainWindow):
         self._sim_mode.addItems(["S-Parameters", "Channel Sim", "Transient"])
         self._sim_mode.currentTextChanged.connect(self._on_sim_mode_changed)
 
+        # --- Solver selector (network solve path) ---
+        self._solver_preference = QComboBox()
+        self._solver_preference.addItem("Auto", "auto")
+        self._solver_preference.addItem("T-Cascade", "t_cascade")
+        self._solver_preference.addItem("MNA", "mna")
+        self._solver_preference.currentIndexChanged.connect(self._emit_project_modified)
+
         # --- Channel sim controls ---
         self._channel_sim_button = QPushButton("Run Channel Simulation")
         self._channel_sim_button.clicked.connect(self._run_channel_simulation)
@@ -4379,6 +4386,7 @@ class CircuitWindow(QMainWindow):
         sim_form = QFormLayout()
         sim_form.addRow("Circuit name", self._circuit_name_edit)
         sim_form.addRow("Simulation mode", self._sim_mode)
+        sim_form.addRow("Solver", self._solver_preference)
         inspector_layout.addLayout(sim_form)
 
         sweep_form = QFormLayout()
@@ -4770,6 +4778,7 @@ class CircuitWindow(QMainWindow):
                 self._state,
                 driver_instance_id=driver_inst.instance_id,
                 output_port_instance_id=out_instance_id,
+                solver_preference=self._selected_solver_preference(),
             )
         except Exception as exc:
             return None, f"Channel simulation failed: {exc}"
@@ -4844,6 +4853,7 @@ class CircuitWindow(QMainWindow):
                 self._state,
                 driver_instance_id=driver_inst.instance_id,
                 output_port_instance_id=out_instance_id,
+                solver_preference=self._selected_solver_preference(),
             )
         except Exception as exc:
             return None, f"Channel simulation failed: {exc}"
@@ -4852,7 +4862,11 @@ class CircuitWindow(QMainWindow):
     def export_equivalent_touchstone_for_project(self) -> tuple[str | None, str | None, str | None]:
         """Return filename and Touchstone content for project-side export."""
         try:
-            result = solve_circuit_network(self._document, self._state)
+            result = solve_circuit_network(
+                self._document,
+                self._state,
+                solver_preference=self._selected_solver_preference(),
+            )
             text = to_touchstone_string_with_format(
                 result,
                 data_format="DB",
@@ -5389,6 +5403,12 @@ class CircuitWindow(QMainWindow):
             f"{self._format_frequency_hz(summary.worst_frequency_hz)} "
             f"(max sigma = {summary.worst_sigma_max:.6g}, affected points = {summary.points_over_warn})."
         )
+
+    def _describe_solve_engine(self, result) -> str:  # noqa: ANN001
+        engine = str(getattr(result, "solve_engine", "") or "mna").strip().lower()
+        if engine == "t_cascade":
+            return "Solve engine: T-Cascade"
+        return "Solve engine: MNA"
 
     def _confirm_passivity_export(self, result) -> bool:  # noqa: ANN001
         diagnostic = result.passivity
@@ -6414,6 +6434,7 @@ class CircuitWindow(QMainWindow):
                 source_instance_id=source_inst.instance_id,
                 output_refs=output_refs,
                 stop_time_s=self._transient_stop_time.value() * 1e-9,
+                solver_preference=self._selected_solver_preference(),
                 progress_callback=_on_progress,
             )
         except InterruptedError:
@@ -6523,6 +6544,7 @@ class CircuitWindow(QMainWindow):
                 self._state,
                 driver_instance_id=driver_inst.instance_id,
                 output_port_instance_id=out_instance_id,
+                solver_preference=self._selected_solver_preference(),
                 progress_callback=_on_progress,
             )
         except InterruptedError:
@@ -6593,6 +6615,7 @@ class CircuitWindow(QMainWindow):
             "circuit_name": self.circuit_display_name(),
             "splitter_sizes": self._splitter.sizes(),
             "simulation_mode": self._sim_mode.currentText(),
+            "solver_preference": self._selected_solver_preference(),
             "eye_span_ui": self._selected_eye_span_ui(),
             "eye_render_mode": self._selected_eye_render_mode(),
             "eye_quality_preset": self._selected_eye_quality_preset(),
@@ -6695,6 +6718,16 @@ class CircuitWindow(QMainWindow):
             self._sim_mode.blockSignals(True)
             self._sim_mode.setCurrentText(simulation_mode)
             self._sim_mode.blockSignals(False)
+
+        solver_preference = str(state.get("solver_preference", "auto")).strip().lower()
+        solver_idx = self._solver_preference.findData(solver_preference)
+        if solver_idx < 0:
+            solver_idx = self._solver_preference.findData("auto")
+        if solver_idx >= 0:
+            self._solver_preference.blockSignals(True)
+            self._solver_preference.setCurrentIndex(solver_idx)
+            self._solver_preference.blockSignals(False)
+
         self._on_sim_mode_changed(self._sim_mode.currentText())
 
         eye_span_ui = state.get("eye_span_ui", DEFAULT_EYE_SPAN_UI)
@@ -6801,8 +6834,14 @@ class CircuitWindow(QMainWindow):
 
         try:
             self._status_label.setText("Solving equivalent network...")
-            result = solve_circuit_network(self._document, self._state)
-            self._status_label.setText(self._describe_passivity(result))
+            result = solve_circuit_network(
+                self._document,
+                self._state,
+                solver_preference=self._selected_solver_preference(),
+            )
+            self._status_label.setText(
+                f"{self._describe_solve_engine(result)}. {self._describe_passivity(result)}"
+            )
             if not self._confirm_passivity_export(result):
                 self._status_label.setText("Export cancelled due to passivity warning.")
                 return
@@ -6827,6 +6866,7 @@ class CircuitWindow(QMainWindow):
             "frequency_unit": selected_unit,
             "data_format": selected_format,
             "file_name": file_name,
+            "solve_engine": str(getattr(result, "solve_engine", "mna")),
         }
         self.sparameter_result_generated.emit(payload)
 
@@ -6845,7 +6885,8 @@ class CircuitWindow(QMainWindow):
             return
 
         self._status_label.setText(
-            f"Equivalent Touchstone exported to {saved_path}. {self._describe_passivity(result)}"
+            f"Equivalent Touchstone exported to {saved_path}. "
+            f"{self._describe_solve_engine(result)}. {self._describe_passivity(result)}"
         )
 
     def _emit_project_modified(self) -> None:
@@ -6952,6 +6993,10 @@ class CircuitWindow(QMainWindow):
     def _selected_eye_quality_preset(self) -> str:
         preset = self._drv_eye_quality_preset.currentData()
         return str(preset) if preset is not None else DEFAULT_QUALITY_PRESET
+
+    def _selected_solver_preference(self) -> str:
+        pref = self._solver_preference.currentData()
+        return str(pref) if pref is not None else "auto"
 
     def _on_eye_span_window_changed(self, span_ui: int) -> None:
         eye_span_index = self._drv_eye_span.findData(int(span_ui))

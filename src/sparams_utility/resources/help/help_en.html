@@ -143,7 +143,7 @@
   </p>
   <p>
     This document describes the GUI <b>and</b> the underlying numerical methods, so that every
-    measurement and every plot can be reproduced and audited. It corresponds to version <b>2.2</b>.
+    measurement and every plot can be reproduced and audited. It corresponds to version <b>2.3</b>.
   </p>
 
   <div class="toc">
@@ -174,6 +174,7 @@
           <li><a href="#sec-circuit-elements">Element library</a></li>
           <li><a href="#sec-circuit-solver">Network solver (Y/Z/S conversion)</a></li>
           <li><a href="#sec-circuit-export">Equivalent network export</a></li>
+          <li><a href="#sec-circuit-cascade">Touchstone T-Cascade &amp; interpolation</a></li>
         </ol>
       </li>
       <li><a href="#sec-channel">Channel Simulation &amp; Eye Diagram</a>
@@ -288,6 +289,15 @@ b_k = (V_k - Z0_k * I_k) / (2 * sqrt(Re{Z0_k}))</div>
       </ul>
     </li>
     <li>Plot legend labels can be edited in place to produce publication-ready figures.</li>
+    <li><b>Markers</b>: vertical reference lines that read out interpolated dB values at the cursor position.
+      <ul>
+        <li><b>Double-click</b> on the plot area to drop a new marker at that frequency.</li>
+        <li><b>Markers &rarr; Add marker at center</b>: places a marker at the midpoint of the current x-axis view.</li>
+        <li>Drag a marker line to move it; the label updates in real time showing the frequency and the interpolated magnitude (dB) for every visible trace.</li>
+        <li><b>Right-click</b> a marker line to remove it individually.</li>
+        <li><b>Markers &rarr; Clear all markers</b>: removes all markers at once.</li>
+      </ul>
+    </li>
   </ul>
 
   <h2 id="sec-tdr">7. TDR Window <a class="back" href="#top">&uarr; top</a></h2>
@@ -350,6 +360,15 @@ Resolution length = c0 / (2 * fmax)   for vacuum; divide by sqrt(eps_r) for line
       (<span class="math">t<sub>r</sub>&nbsp;&approx;&nbsp;2.5631&middot;&sigma;</span>). Mimics a real TDR sampler.</li>
     <li><b>Front shift</b>: time origin shift to align the launch edge with <span class="math">t = 0</span>.</li>
     <li><b>Total time</b>: clip the visible window to the range relevant to the DUT length.</li>
+    <li><b>Markers</b>: vertical reference lines that read out interpolated impedance values at the cursor position.
+      <ul>
+        <li><b>Double-click</b> on the TDR plot to drop a new marker at that time instant.</li>
+        <li><b>Markers &rarr; Add marker at center</b>: places a marker at the midpoint of the visible time window.</li>
+        <li>Drag a marker to move it; the label shows the time (ns/ps) and the interpolated impedance (&Omega;) for every enabled trace.</li>
+        <li><b>Right-click</b> a marker line to remove it individually.</li>
+        <li><b>Markers &rarr; Clear all markers</b>: removes all markers at once.</li>
+      </ul>
+    </li>
   </ul>
 
   <h2 id="sec-circuit">8. Circuit Editor <a class="back" href="#top">&uarr; top</a></h2>
@@ -651,6 +670,32 @@ where  Y0 = diag(1 / Z0_k)</div>
     <li>The exported S-matrix is written to a Touchstone file in the selected format (RI / MA / DB) and frequency unit.</li>
     <li>Validation runs before export: missing connections, dangling nodes, or empty sweep raise an error dialog.</li>
   </ul>
+
+  <h3 id="sec-circuit-cascade">8.4 Touchstone T-Cascade with automatic frequency interpolation</h3>
+  <p>
+    When two or more Touchstone blocks are cascaded, SPUtility resamples each input on the global
+    sweep grid before stamping it into the indefinite admittance matrix. The interpolation is
+    performed independently on the real and imaginary parts of the S-parameters, on a logarithmic
+    frequency axis whenever all sample points are strictly positive. This is the same convention used
+    by mainstream SI tools for cascaded <i>SnP</i> blocks.
+  </p>
+  <p>
+    For scripting and verification, the helper module
+    <code>sparams_utility.interpolation</code> exposes T-Cascade primitives based on
+    <a href="https://scikit-rf.readthedocs.io/">scikit-rf</a>:
+  </p>
+  <ul>
+    <li><code>load_networks(paths)</code> &mdash; load Touchstone files as <code>skrf.Network</code> objects.</li>
+    <li><code>common_frequency_grid(networks, mode)</code> &mdash; build a union, intersection or finest-step grid.</li>
+    <li><code>interpolate_networks(networks, mode)</code> &mdash; resample all inputs on the common grid.</li>
+    <li><code>cascade_networks(networks)</code> &mdash; T-parameter cascade (left-to-right).</li>
+    <li><code>tdr_from_network(network, port)</code> &mdash; Hamming-windowed step TDR returning <i>(t, Z)</i>.</li>
+  </ul>
+  <p>
+    Using these helpers guarantees bit-exact agreement with ADS as long as the input files share
+    the same reference impedance. If reference impedances differ, scikit-rf renormalises the
+    networks before cascading, exactly as ADS does.
+  </p>
 
   <h2 id="sec-channel">9. Channel Simulation &amp; Eye Diagram <a class="back" href="#top">&uarr; top</a></h2>
 

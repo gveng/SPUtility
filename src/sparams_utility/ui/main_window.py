@@ -49,6 +49,10 @@ from sparams_utility.ui.transient_window import TransientResultWindow
 _RECENT_ENTRIES_MAX = 12
 
 
+class _ExportAborted(Exception):
+    """Internal sentinel raised to abort an interactive project export."""
+
+
 class MainWindow(QMainWindow):
     def __init__(self, state: AppState) -> None:
         super().__init__()
@@ -295,6 +299,7 @@ class MainWindow(QMainWindow):
             "sparam_plot_file": None,
             "transient_file": None,
             "output_kind": None,
+            "solve_engine": None,
             "parent_circuit_entry_id": parent_circuit_entry_id,
         }
         return entry_id
@@ -441,6 +446,7 @@ class MainWindow(QMainWindow):
         entry["eye_file"] = eye_file_name
         entry["sparam_file"] = None
         entry["sparam_plot_file"] = None
+        entry["solve_engine"] = None
         entry["output_kind"] = "eye"
         if old_eye_file and old_eye_file != eye_file_name:
             old_path = data_dir / old_eye_file
@@ -504,6 +510,7 @@ class MainWindow(QMainWindow):
         entry["sparam_file"] = sparam_file_name
         entry["sparam_plot_file"] = None
         entry["output_kind"] = "sparam"
+        entry["solve_engine"] = str(payload.get("solve_engine") or "").strip() or None
 
         if old_eye_file:
             old_eye_path = data_dir / old_eye_file
@@ -673,6 +680,10 @@ class MainWindow(QMainWindow):
             if sparam_plot_file:
                 s_item = QTreeWidgetItem([self._tree_display_name(sparam_plot_file)])
                 s_item.setIcon(0, self._icon_for_kind("sparam-file"))
+                solve_engine = str(entry.get("solve_engine") or "").strip()
+                if solve_engine:
+                    engine_label = "T-Cascade" if solve_engine.lower() == "t_cascade" else solve_engine.upper()
+                    s_item.setToolTip(0, f"Equivalent network generated with {engine_label}.")
                 s_item.setData(
                     0,
                     Qt.UserRole,
@@ -2011,7 +2022,16 @@ class MainWindow(QMainWindow):
         self,
         source_paths: list[str],
         source_dir: Path,
+        missing_file_resolver=None,
+        skipped_files: list[str] | None = None,
     ) -> dict[str, str]:
+        """Copy referenced Touchstone files into ``source_dir``.
+
+        ``missing_file_resolver`` is an optional callable taking the missing
+        path string and returning either a replacement path string (the user
+        located the file), or ``None`` to skip and continue with the next file.
+        Skipped paths are appended to ``skipped_files`` if provided.
+        """
         source_dir.mkdir(parents=True, exist_ok=True)
         copied: dict[str, str] = {}
         used_names: set[str] = set()
@@ -2022,7 +2042,18 @@ class MainWindow(QMainWindow):
                 continue
             source_path = Path(normalized)
             if not source_path.exists():
-                raise FileNotFoundError(normalized)
+                if missing_file_resolver is None:
+                    raise FileNotFoundError(normalized)
+                replacement = missing_file_resolver(normalized)
+                if not replacement:
+                    if skipped_files is not None:
+                        skipped_files.append(normalized)
+                    continue
+                source_path = Path(replacement)
+                if not source_path.exists():
+                    if skipped_files is not None:
+                        skipped_files.append(normalized)
+                    continue
 
             candidate_name = source_path.name
             name_key = candidate_name.lower()
@@ -2041,6 +2072,11 @@ class MainWindow(QMainWindow):
             target_path = source_dir / candidate_name
             shutil.copy2(source_path, target_path)
             copied[normalized] = (Path(source_dir.name) / candidate_name).as_posix()
+            # Also map the (possibly different) replacement path so any payload
+            # entries pointing at it are rewritten too.
+            replacement_normalized = self._normalize_path(str(source_path))
+            if replacement_normalized and replacement_normalized != normalized:
+                copied[replacement_normalized] = (Path(source_dir.name) / candidate_name).as_posix()
 
         return copied
 
@@ -2100,17 +2136,50 @@ class MainWindow(QMainWindow):
 
         return exported
 
-    def _build_export_project_bundle(self, project_path: Path) -> tuple[Path, Path, Path, list[str]]:
+    def _build_export_project_bundle(
+        self,
+        project_path: Path,
+        target_zip_path: Path | None = None,
+        missing_file_resolver=None,
+        cleanup_export_dir: bool = True,
+    ) -> tuple[Path, Path, Path, list[str]]:
+        """Build an export bundle and ZIP archive.
+
+        Parameters
+        ----------
+        project_path:
+            Path to the saved project file (used as base for the data folder).
+        target_zip_path:
+            Where to write the final ZIP. If ``None``, defaults to
+            ``<project_stem>_Export.zip`` next to the project.
+        missing_file_resolver:
+            Optional callable invoked when a referenced Touchstone file is
+            missing on disk. It receives the missing path and returns either a
+            replacement file path (string) or ``None`` to skip the file.
+        cleanup_export_dir:
+            When ``True`` (default), the staging export folder is removed
+            after the ZIP archive is created, leaving only the ZIP behind.
+        """
         self._project_data_dir = project_path.with_name(f"{project_path.stem}_Data")
         export_warnings = self._export_project_data_files(self._project_data_dir)
         payload = self._build_project_payload()
         referenced_paths = self._collect_referenced_touchstone_paths(payload)
 
-        export_dir = project_path.with_name(f"{project_path.stem}_Export")
+        if target_zip_path is None:
+            target_zip_path = project_path.with_name(f"{project_path.stem}_Export.zip")
+        target_zip_path = Path(target_zip_path)
+        if target_zip_path.suffix.lower() != ".zip":
+            target_zip_path = target_zip_path.with_suffix(".zip")
+        target_zip_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Use a staging folder named after the ZIP stem next to the ZIP.
+        export_dir = target_zip_path.with_suffix("")
         export_project_path = export_dir / project_path.name
         export_data_dir = export_dir / f"{project_path.stem}_Data"
         export_source_dir = export_dir / f"{project_path.stem}_Source"
-        export_zip_path = export_dir.with_suffix(".zip")
+        export_zip_path = target_zip_path
+
+        skipped_sources: list[str] = []
 
         try:
             if export_dir.exists():
@@ -2125,7 +2194,12 @@ class MainWindow(QMainWindow):
             else:
                 export_data_dir.mkdir(parents=True, exist_ok=True)
 
-            source_path_map = self._copy_touchstone_sources_for_export(referenced_paths, export_source_dir)
+            source_path_map = self._copy_touchstone_sources_for_export(
+                referenced_paths,
+                export_source_dir,
+                missing_file_resolver=missing_file_resolver,
+                skipped_files=skipped_sources,
+            )
             export_payload = self._build_export_project_payload(payload, referenced_paths, source_path_map)
             with open(export_project_path, "w", encoding="utf-8") as fp:
                 json.dump(export_payload, fp, indent=2)
@@ -2136,6 +2210,9 @@ class MainWindow(QMainWindow):
                 root_dir=export_dir.parent,
                 base_dir=export_dir.name,
             )
+            archive_path = Path(archive_path)
+            if archive_path.resolve() != export_zip_path.resolve():
+                shutil.move(str(archive_path), str(export_zip_path))
         except Exception:
             if export_dir.exists():
                 shutil.rmtree(export_dir, ignore_errors=True)
@@ -2146,7 +2223,15 @@ class MainWindow(QMainWindow):
                     pass
             raise
 
-        return export_dir, export_project_path, Path(archive_path), export_warnings
+        if skipped_sources:
+            export_warnings.extend(
+                f"Source file skipped (not found): {p}" for p in skipped_sources
+            )
+
+        if cleanup_export_dir and export_dir.exists():
+            shutil.rmtree(export_dir, ignore_errors=True)
+
+        return export_dir, export_project_path, export_zip_path, export_warnings
 
     def _export_project(self) -> bool:
         if self._project_path is None:
@@ -2159,8 +2244,56 @@ class MainWindow(QMainWindow):
                 return False
 
         project_path = Path(str(self._project_path))
+
+        default_zip = project_path.with_name(f"{project_path.stem}_Export.zip")
+        chosen_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Project as ZIP",
+            str(default_zip),
+            "ZIP archive (*.zip)",
+        )
+        if not chosen_path:
+            return False
+        target_zip_path = Path(chosen_path)
+        if target_zip_path.suffix.lower() != ".zip":
+            target_zip_path = target_zip_path.with_suffix(".zip")
+
+        def _resolve_missing(missing_path: str) -> str | None:
+            answer = QMessageBox.question(
+                self,
+                "Missing Touchstone file",
+                (
+                    f"The following referenced file is missing:\n{missing_path}\n\n"
+                    "Do you want to locate it manually?\n"
+                    "Yes = browse for the file, No = skip and continue, Cancel = abort export."
+                ),
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Cancel:
+                raise _ExportAborted()
+            if answer == QMessageBox.No:
+                return None
+            start_dir = str(Path(missing_path).parent) if missing_path else ""
+            located, _ = QFileDialog.getOpenFileName(
+                self,
+                f"Locate {Path(missing_path).name}",
+                start_dir,
+                "Touchstone files (*.s*p *.ts);;All files (*.*)",
+            )
+            return located or None
+
         try:
-            export_dir, export_project_path, export_zip_path, export_warnings = self._build_export_project_bundle(project_path)
+            export_dir, export_project_path, export_zip_path, export_warnings = (
+                self._build_export_project_bundle(
+                    project_path,
+                    target_zip_path=target_zip_path,
+                    missing_file_resolver=_resolve_missing,
+                    cleanup_export_dir=True,
+                )
+            )
+        except _ExportAborted:
+            return False
         except FileNotFoundError as exc:
             QMessageBox.critical(
                 self,
@@ -2173,12 +2306,11 @@ class MainWindow(QMainWindow):
             return False
 
         message = (
-            f"Export folder created:\n{export_dir}\n\n"
-            f"Exported project file:\n{export_project_path}\n\n"
-            f"ZIP archive:\n{export_zip_path}"
+            f"Project exported to ZIP archive:\n{export_zip_path}\n\n"
+            f"Exported project file (inside ZIP):\n{export_project_path.name}"
         )
         if export_warnings:
-            message += "\n\nSome project data exports were missing:\n" + "\n".join(export_warnings)
+            message += "\n\nWarnings:\n" + "\n".join(export_warnings)
         QMessageBox.information(self, "Project exported", message)
         return True
 
@@ -2463,6 +2595,7 @@ class MainWindow(QMainWindow):
                         "sparam_plot_file": item.get("sparam_plot_file"),
                         "transient_file": item.get("transient_file"),
                         "output_kind": item.get("output_kind"),
+                        "solve_engine": item.get("solve_engine"),
                         "parent_circuit_entry_id": item.get("parent_circuit_entry_id"),
                     }
 

@@ -76,6 +76,9 @@ class TdrWindow(QMainWindow):
         self._enabled: Dict[str, bool] = {}
         self._row_to_fid: List[str] = []
         self._legend_offset = (10.0, 10.0)
+        self._marker_positions: List[float] = []
+        self._marker_lines: List[pg.InfiniteLine] = []
+        self._cached_tdr_data: Dict[str, tuple] = {}  # file_id -> (t_s, z_ohm)
 
         self._plot_widget = pg.PlotWidget()
         self._plot_widget.setBackground("w")
@@ -94,6 +97,8 @@ class TdrWindow(QMainWindow):
         pi.showAxes(True, showValues=(True, False, False, True))
 
         self._legend = self._plot_widget.addLegend(offset=self._legend_offset)
+
+        self._plot_widget.scene().sigMouseClicked.connect(self._on_plot_scene_clicked)
 
         self._selection_table = QTableWidget(0, 4)
         self._selection_table.setHorizontalHeaderLabels(
@@ -171,6 +176,12 @@ class TdrWindow(QMainWindow):
         controls_row.addSpacing(10)
         controls_row.addWidget(QLabel("Window:"))
         controls_row.addWidget(self._window_combo)
+
+        markers_menu = self.menuBar().addMenu("Markers")
+        add_marker_action = markers_menu.addAction("Add marker at center")
+        add_marker_action.triggered.connect(self._add_marker_at_center)
+        clear_markers_action = markers_menu.addAction("Clear all markers")
+        clear_markers_action.triggered.connect(self._clear_all_markers)
 
         plot_container = QWidget()
         plot_layout = QVBoxLayout(plot_container)
@@ -296,6 +307,7 @@ class TdrWindow(QMainWindow):
         plot_item = self._plot_widget.getPlotItem()
         plot_item.clear()
         self._legend.clear()
+        self._cached_tdr_data.clear()
 
         color_index = 0
         for loaded in self._state.get_loaded_files():
@@ -322,6 +334,8 @@ class TdrWindow(QMainWindow):
             if t_s.size == 0:
                 continue
 
+            self._cached_tdr_data[loaded.file_id] = (t_s, z_ohm)
+
             color = self._PLOT_COLORS[color_index % len(self._PLOT_COLORS)]
             color_index += 1
             legend_label = self._labels.get(loaded.file_id, loaded.display_name)
@@ -334,6 +348,111 @@ class TdrWindow(QMainWindow):
             )
 
         self._set_legend_offset(self._legend_offset)
+        self._rebuild_markers()
+
+    # ── Marker support ────────────────────────────────────────────────────
+
+    def _on_plot_scene_clicked(self, event) -> None:
+        if not event.double():
+            return
+        vb = self._plot_widget.getPlotItem().vb
+        if not vb.sceneBoundingRect().contains(event.scenePos()):
+            return
+        pos = vb.mapSceneToView(event.scenePos())
+        self._marker_positions.append(pos.x())
+        self._rebuild_markers()
+
+    def _add_marker_at_center(self) -> None:
+        vb = self._plot_widget.getPlotItem().vb
+        x_range = vb.viewRange()[0]
+        x = (x_range[0] + x_range[1]) / 2.0
+        self._marker_positions.append(x)
+        self._rebuild_markers()
+
+    def _clear_all_markers(self) -> None:
+        self._marker_positions.clear()
+        self._rebuild_markers()
+
+    def _remove_marker(self, line: pg.InfiniteLine) -> None:
+        plot_item = self._plot_widget.getPlotItem()
+        if line in self._marker_lines:
+            idx = self._marker_lines.index(line)
+            if idx < len(self._marker_positions):
+                self._marker_positions.pop(idx)
+        try:
+            plot_item.removeItem(line)
+        except Exception:
+            pass
+        self._rebuild_markers()
+
+    def _rebuild_markers(self) -> None:
+        plot_item = self._plot_widget.getPlotItem()
+        for line in self._marker_lines:
+            try:
+                plot_item.removeItem(line)
+            except Exception:
+                pass
+        self._marker_lines.clear()
+
+        for i, x_pos in enumerate(self._marker_positions):
+            label_text = self._format_marker_label(x_pos)
+            line = pg.InfiniteLine(
+                pos=x_pos,
+                angle=90,
+                movable=True,
+                pen=pg.mkPen(color="#e6550d", width=1.5, style=Qt.PenStyle.DashLine),
+                label=label_text,
+                labelOpts={
+                    "position": 0.97,
+                    "color": "#e6550d",
+                    "fill": pg.mkBrush(255, 255, 255, 200),
+                    "border": pg.mkPen(color="#e6550d", width=0.8),
+                    "movable": True,
+                },
+            )
+
+            def _on_pos_changed(ln=line, index=i) -> None:
+                x = ln.value()
+                if index < len(self._marker_positions):
+                    self._marker_positions[index] = x
+                ln.label.setFormat(self._format_marker_label(x))
+
+            def _on_clicked(ln=line, ev=None) -> None:
+                try:
+                    button = ev.button() if ev is not None else None
+                except Exception:
+                    button = None
+                if button == Qt.RightButton:
+                    self._remove_marker(ln)
+
+            line.sigPositionChanged.connect(_on_pos_changed)
+            line.sigClicked.connect(lambda ln, ev, _ln=line: _on_clicked(_ln, ev))
+            plot_item.addItem(line)
+            self._marker_lines.append(line)
+
+    def _format_marker_label(self, x_s: float) -> str:
+        if abs(x_s) >= 1e-9:
+            x_str = f"t = {x_s * 1e9:.4f} ns"
+        elif abs(x_s) >= 1e-12:
+            x_str = f"t = {x_s * 1e12:.4f} ps"
+        else:
+            x_str = f"t = {x_s:.4e} s"
+
+        lines = [x_str]
+        for loaded in self._state.get_loaded_files():
+            if not self._enabled.get(loaded.file_id, True):
+                continue
+            cached = self._cached_tdr_data.get(loaded.file_id)
+            if cached is None:
+                continue
+            t_s_arr, z_ohm_arr = cached
+            trace = self._selected_trace.get(loaded.file_id, "")
+            legend_label = self._labels.get(loaded.file_id, loaded.display_name)
+            finite = np.isfinite(z_ohm_arr)
+            if np.any(finite):
+                z = float(np.interp(x_s, t_s_arr[finite], z_ohm_arr[finite]))
+                lines.append(f"{legend_label} - {trace}: {z:.2f} Ω")
+        return "\n".join(lines)
 
     def apply_project_state(self, state: dict) -> None:
         tdr_name = str(state.get("tdr_name", "")).strip()
