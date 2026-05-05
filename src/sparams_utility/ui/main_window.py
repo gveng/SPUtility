@@ -3316,18 +3316,22 @@ class MainWindow(QMainWindow):
     def _show_about(self) -> None:
         dlg = QDialog(self)
         dlg.setWindowTitle(f"About {pkg.__app_name__}")
-        dlg.setFixedSize(340, 200)
+        dlg.setFixedSize(360, 230)
         layout = QVBoxLayout(dlg)
         layout.setSpacing(8)
 
+        build_date = getattr(pkg, "__build_date__", "")
         for html in (
             f"<b style='font-size:16px'>{pkg.__app_name__}</b>",
             f"Version {pkg.__version__}",
+            f"Build date: {build_date}" if build_date else "",
             "<hr>",
             f"<b>Author:</b> {pkg.__author__}",
             "",
-            "S-Parameters Touchstone Viewer",
+            "S-Parameters Touchstone viewer and synthesizer",
         ):
+            if html == "" and not build_date:
+                continue
             lbl = QLabel(html)
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setTextFormat(Qt.RichText)
