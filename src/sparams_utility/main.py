@@ -38,13 +38,14 @@ def run(app=None, splash=None) -> int:
             try:
                 import ctypes
                 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                    "SParamsUtility.App"
+                    "SParamsStudio.App"
                 )
             except Exception:
                 pass
 
         app = QApplication(sys.argv)
         app.setApplicationName("S-Parameters Utility")
+    app.setApplicationName("S-Params Studio")
 
         icon_path = _resource_path("Images", "Icon.png")
         if icon_path.exists():
@@ -62,11 +63,12 @@ def run(app=None, splash=None) -> int:
                     pixmap = pixmap.scaled(
                         target_w, target_h,
                         Qt.KeepAspectRatio,
-                        Qt.SmoothTransformation,
+                        Qt.FastTransformation,
                     )
                 splash = QSplashScreen(pixmap)
                 splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
                 splash.show()
+                app.processEvents()
                 app.processEvents()
 
     # ── Heavy imports – happen while splash is already on screen ──

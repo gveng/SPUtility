@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>SPUtility User Guide</title>
+  <title>S-Params Studio User Guide</title>
   <style>
     body {
       font-family: Segoe UI, Arial, sans-serif;
@@ -134,16 +134,16 @@
   </style>
 </head>
 <body id="top">
-  <h1>SPUtility User Guide</h1>
+  <h1>S-Params Studio User Guide</h1>
   <p>
-    SPUtility is a desktop viewer, network composer and channel-simulation tool for Touchstone
+    S-Params Studio is a desktop viewer, network composer and channel-simulation tool for Touchstone
     S-parameter files. It targets signal-integrity engineers who need a quick, scriptable, single-window
     workflow to inspect S-parameter blocks, build interconnect models, run time-domain reflectometry,
     convolve transmitted bit streams through linear channels, and read out eye-diagram metrics.
   </p>
   <p>
     This document describes the GUI <b>and</b> the underlying numerical methods, so that every
-    measurement and every plot can be reproduced and audited. It corresponds to version <b>2.3</b>.
+    measurement and every plot can be reproduced and audited. It corresponds to version <b>2.6.6</b>.
   </p>
 
   <div class="toc">
@@ -313,13 +313,13 @@ rho_step(t) = integral_{-inf..t} h(tau) d tau   (step reflection)
 Z(t)        = Z0 * (1 + rho_step(t)) / (1 - rho_step(t))</div>
   <div class="figure">
     <img src="images/tdr_pipeline.svg" alt="TDR processing pipeline">
-    <div class="caption">TDR conversion chain used in SPUtility.</div>
+    <div class="caption">TDR conversion chain used in S-Params Studio.</div>
   </div>
 
   <h3 id="sec-tdr-window">7.2 Windowing &amp; uniform resampling</h3>
   <p>
     The inverse FFT requires <b>uniform</b> frequency spacing and assumes the spectrum is band-limited.
-    SPUtility:
+    S-Params Studio:
   </p>
   <ol>
     <li>Sorts frequency points and detects whether spacing is uniform (relative tolerance &lt; 1&permil;).</li>
@@ -673,7 +673,7 @@ where  Y0 = diag(1 / Z0_k)</div>
 
   <h3 id="sec-circuit-cascade">8.4 Touchstone T-Cascade with automatic frequency interpolation</h3>
   <p>
-    When two or more Touchstone blocks are cascaded, SPUtility resamples each input on the global
+    When two or more Touchstone blocks are cascaded, S-Params Studio resamples each input on the global
     sweep grid before stamping it into the indefinite admittance matrix. The interpolation is
     performed independently on the real and imaginary parts of the S-parameters, on a logarithmic
     frequency axis whenever all sample points are strictly positive. This is the same convention used

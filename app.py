@@ -29,14 +29,15 @@ def _bootstrap() -> tuple[QApplication, "QSplashScreen | None"]:
     if sys.platform == "win32":
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "SParamsUtility.App"
-            )
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                    "SParamsStudio.App"
+                )
         except Exception:
             pass
 
     _app = QApplication(sys.argv)
     _app.setApplicationName("S-Parameters Utility")
+    _app.setApplicationName("S-Params Studio")
 
     icon_path = _boot_resource("Images", "Icon.png")
     if icon_path.exists():
@@ -55,12 +56,13 @@ def _bootstrap() -> tuple[QApplication, "QSplashScreen | None"]:
                 pixmap = pixmap.scaled(
                     target_w, target_h,
                     Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
+                    Qt.FastTransformation,  # faster than Smooth; splash is temporary
                 )
             _splash = QSplashScreen(pixmap)
             _splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
             _splash.show()
-            _app.processEvents()  # force immediate paint
+            _app.processEvents()  # first flush — triggers OS paint
+            _app.processEvents()  # second flush — ensures it renders before heavy imports
 
     return _app, _splash
 

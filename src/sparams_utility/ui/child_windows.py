@@ -134,6 +134,7 @@ class CategoryWindow(QMainWindow):
         super().__init__(None, Qt.Window)
         self.category = category
         self._default_icon = icon
+        self._aumid_set = False  # set once, on first show
         self.setWindowTitle(title)
         if icon is not None and not icon.isNull():
             self.setWindowIcon(icon)
@@ -157,9 +158,21 @@ class CategoryWindow(QMainWindow):
             self.showNormal()
         elif not self.isVisible():
             self.show()
-        # Apply unique AppUserModelID so Windows shows this category window as
-        # its own taskbar button (ungrouped from other categories).
-        _set_window_app_user_model_id(self, f"SParamsUtility.App.{self.category}")
+        # Apply unique AppUserModelID once (on first show) so Windows shows
+        # this category window as its own taskbar button with its own icon.
+        if not self._aumid_set:
+            self._aumid_set = True
+            _set_window_app_user_model_id(self, f"SParamsStudio.App.{self.category}")
+            # Re-apply window icon after AUMID change so the new taskbar
+            # button picks up the correct icon immediately.
+            _icon = self._default_icon
+            if _icon is None or _icon.isNull():
+                _app = QApplication.instance()
+                if _app is not None:
+                    _icon = _app.windowIcon()
+            if _icon is not None and not _icon.isNull():
+                self.setWindowIcon(_icon)
+            QApplication.processEvents()
         self.raise_()
         self.activateWindow()
         return idx
@@ -408,7 +421,16 @@ class ChildWindowManager(QObject):
         widget.raise_()
         widget.activateWindow()
         # Unique AppUserModelID so each detached window is its own taskbar button.
-        _set_window_app_user_model_id(widget, f"SParamsUtility.App.detached.{id(widget)}")
+        _set_window_app_user_model_id(widget, f"SParamsStudio.App.detached.{id(widget)}")
+        # Re-apply icon after AUMID so the new taskbar entry shows it correctly.
+        _wicon = widget.windowIcon()
+        if _wicon is None or _wicon.isNull():
+            _dapp = QApplication.instance()
+            if _dapp is not None:
+                _wicon = _dapp.windowIcon()
+        if _wicon is not None and not _wicon.isNull():
+            widget.setWindowIcon(_wicon)
+        QApplication.processEvents()
         self._detached[id(widget)] = (widget, cat)
         self._active_widget = widget
         self.widget_activated.emit(widget)
