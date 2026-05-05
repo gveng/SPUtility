@@ -29,9 +29,9 @@ def _bootstrap() -> tuple[QApplication, "QSplashScreen | None"]:
     if sys.platform == "win32":
         try:
             import ctypes
-                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                    "SParamsStudio.App"
-                )
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "SParamsStudio.App"
+            )
         except Exception:
             pass
 

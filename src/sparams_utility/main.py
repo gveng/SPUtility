@@ -47,29 +47,29 @@ def run(app=None, splash=None) -> int:
         app.setApplicationName("S-Parameters Utility")
     app.setApplicationName("S-Params Studio")
 
-        icon_path = _resource_path("Images", "Icon.png")
-        if icon_path.exists():
-            app.setWindowIcon(QIcon(str(icon_path)))
+    icon_path = _resource_path("Images", "Icon.png")
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
-        splash_path = _resource_path("Images", "Splash_Screen.png")
-        if splash_path.exists():
-            pixmap = QPixmap(str(splash_path))
-            if not pixmap.isNull():
-                screen = app.primaryScreen()
-                if screen is not None:
-                    sz = screen.size()
-                    target_w = max(320, int(sz.width() * 0.4))
-                    target_h = max(180, int(sz.height() * 0.4))
-                    pixmap = pixmap.scaled(
-                        target_w, target_h,
-                        Qt.KeepAspectRatio,
-                        Qt.FastTransformation,
-                    )
-                splash = QSplashScreen(pixmap)
-                splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-                splash.show()
-                app.processEvents()
-                app.processEvents()
+    splash_path = _resource_path("Images", "Splash_Screen.png")
+    if splash is None and splash_path.exists():
+        pixmap = QPixmap(str(splash_path))
+        if not pixmap.isNull():
+            screen = app.primaryScreen()
+            if screen is not None:
+                sz = screen.size()
+                target_w = max(320, int(sz.width() * 0.4))
+                target_h = max(180, int(sz.height() * 0.4))
+                pixmap = pixmap.scaled(
+                    target_w, target_h,
+                    Qt.KeepAspectRatio,
+                    Qt.FastTransformation,
+                )
+            splash = QSplashScreen(pixmap)
+            splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+            splash.show()
+            app.processEvents()
+            app.processEvents()
 
     # ── Heavy imports – happen while splash is already on screen ──
     import pyqtgraph as pg
