@@ -12,6 +12,8 @@ if SRC_ROOT not in sys.path:
 
 hiddenimports = []
 hiddenimports += collect_submodules('sparams_utility')
+hiddenimports += collect_submodules('docx')
+hiddenimports += collect_submodules('lxml')
 datas = collect_data_files(
     'sparams_utility',
     includes=[

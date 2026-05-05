@@ -43,6 +43,7 @@ from sparams_utility.ui.plot_window import PlotWindow
 from sparams_utility.ui.tdr_window import TdrWindow
 from sparams_utility.ui.table_models import MagnitudeTableModel, RawDataTableModel
 from sparams_utility.ui.table_window import TableWindow
+from sparams_utility.ui.text_document_window import TextDocumentWindow
 from sparams_utility.ui.transient_window import TransientResultWindow
 
 
@@ -78,6 +79,8 @@ class MainWindow(QMainWindow):
         }
         self._open_windows: dict[tuple[str, str], object] = {}
         self._open_window_keys: dict[int, tuple[str, str]] = {}
+        # Text documents stored in the project tree {doc_id → {id, title, html}}
+        self._text_docs: dict[str, dict] = {}
         self._load_recent_entries()
 
         # Child window manager — top-level category windows replace the MDI area.
@@ -128,10 +131,12 @@ class MainWindow(QMainWindow):
         charts_menu.addAction("Open New SP Plot Window", self._open_plot_window)
         charts_menu.addAction("Open new TDR Window", self._open_tdr_window)
 
-        report_menu = self.menuBar().addMenu("Report")
-        report_menu.addAction("Create SP Plots Reports", self._create_sp_plots_report)
-        report_menu.addAction("Create TDR plots reports", self._create_tdr_plots_report)
-        report_menu.addAction("Create EYE diagrams report", self._create_eye_diagrams_report)
+        tools_menu = self.menuBar().addMenu("Tools")
+        tools_menu.addAction("New Text Document", self._new_text_document)
+        tools_menu.addSeparator()
+        tools_menu.addAction("Create SP Plots Reports", self._create_sp_plots_report)
+        tools_menu.addAction("Create TDR plots reports", self._create_tdr_plots_report)
+        tools_menu.addAction("Create EYE diagrams report", self._create_eye_diagrams_report)
 
         circuit_menu = self.menuBar().addMenu("Circuit")
         circuit_menu.addAction("Open circuit composer", self._open_circuit_window)
@@ -233,6 +238,8 @@ class MainWindow(QMainWindow):
             return style.standardIcon(QStyle.SP_FileLinkIcon)
         if kind == "touchstone-file":
             return style.standardIcon(QStyle.SP_FileIcon)
+        if kind == "text-doc":
+            return style.standardIcon(QStyle.SP_FileDialogContentsView)
         return style.standardIcon(QStyle.SP_FileIcon)
 
     # ── Window taskbar icons ──────────────────────────────────────────────
@@ -756,6 +763,20 @@ class MainWindow(QMainWindow):
                     self._add_tree_window_item(parent_item, kind, entry_id, title)
                 parent_item.setExpanded(True)
 
+        # ── Text documents ────────────────────────────────────────────────
+        if self._text_docs:
+            docs_item = QTreeWidgetItem(["Documents"])
+            docs_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileDialogContentsView))
+            project_item.addChild(docs_item)
+            for doc in sorted(self._text_docs.values(), key=lambda d: d.get("title", "").lower()):
+                doc_id = str(doc.get("id", ""))
+                doc_title = str(doc.get("title", "Document"))
+                d_item = QTreeWidgetItem([doc_title])
+                d_item.setIcon(0, self._icon_for_kind("text-doc"))
+                d_item.setData(0, Qt.UserRole, {"action": "text-doc", "id": doc_id})
+                docs_item.addChild(d_item)
+            docs_item.setExpanded(True)
+
         project_item.setExpanded(True)
 
     def _on_project_tree_context_menu(self, pos) -> None:
@@ -768,6 +789,25 @@ class MainWindow(QMainWindow):
             return
 
         action = str(payload.get("action", ""))
+
+        # ── Text-document context menu ────────────────────────────────────
+        if action == "text-doc":
+            self._project_tree.setCurrentItem(item)
+            menu = QMenu(self)
+            open_action = menu.addAction("Open")
+            rename_action = menu.addAction("Rename")
+            menu.addSeparator()
+            delete_action = menu.addAction("Delete")
+            chosen = menu.exec(self._project_tree.viewport().mapToGlobal(pos))
+            doc_id = str(payload.get("id", ""))
+            if chosen is open_action:
+                self._open_text_document(doc_id)
+            elif chosen is rename_action:
+                self._rename_text_document(doc_id)
+            elif chosen is delete_action:
+                self._delete_text_document(doc_id)
+            return
+
         if action not in {"window", "output-file"}:
             return
 
@@ -805,6 +845,9 @@ class MainWindow(QMainWindow):
 
     def _open_tree_payload(self, payload: dict) -> None:
         action = str(payload.get("action", ""))
+        if action == "text-doc":
+            self._open_text_document(str(payload.get("id", "")))
+            return
         if action == "window":
             self._activate_or_open_window_entry(
                 str(payload.get("kind", "")),
@@ -1860,6 +1903,7 @@ class MainWindow(QMainWindow):
             "tdr_plots": tdr_windows,
             "circuits": circuit_windows,
             "window_registry": registry_payload,
+            "text_documents": list(self._text_docs.values()),
         }
 
     def _resolve_project_reference_path(self, project_dir: Path, raw_path: str) -> str:
@@ -2521,6 +2565,7 @@ class MainWindow(QMainWindow):
         self._window_registry = {"sp": {}, "tdr": {}, "circuit": {}}
         self._open_windows = {}
         self._open_window_keys = {}
+        self._text_docs = {}
         self._rebuild_tables_menu()
         self._refresh_project_tree()
         self._on_active_widget_changed(None)
@@ -2688,6 +2733,18 @@ class MainWindow(QMainWindow):
         self._project_data_dir = Path(file_path).with_name(Path(file_path).stem + "_Data")
         self._project_dirty = False
         self._push_recent_project(file_path)
+
+        # Restore text documents.
+        for item in payload.get("text_documents", []):
+            if not isinstance(item, dict):
+                continue
+            doc_id = str(item.get("id") or self._new_entry_id("text-doc"))
+            self._text_docs[doc_id] = {
+                "id": doc_id,
+                "title": str(item.get("title", "Document")),
+                "html": str(item.get("html", "")),
+            }
+
         self._refresh_project_tree()
 
     # ── Tables menu ───────────────────────────────────────────────────────
@@ -2911,6 +2968,83 @@ class MainWindow(QMainWindow):
         stream = BytesIO(bytes(raw))
         stream.seek(0)
         return stream
+
+    # ── Text-document methods ─────────────────────────────────────────────
+
+    def _new_text_document(self) -> None:
+        """Create a new blank text document and open its editor."""
+        doc_id = self._new_entry_id("text-doc")
+        title = f"Document {len(self._text_docs) + 1}"
+        self._text_docs[doc_id] = {"id": doc_id, "title": title, "html": ""}
+        self._refresh_project_tree()
+        self._mark_project_dirty()
+        self._open_text_document(doc_id)
+
+    def _open_text_document(self, doc_id: str) -> None:
+        """Open (or raise if already open) the editor window for *doc_id*."""
+        doc = self._text_docs.get(doc_id)
+        if doc is None:
+            return
+        # If a window is already open, just raise it.
+        existing_win = None
+        for w in self._windows.widgets_of_type(TextDocumentWindow):
+            if w.doc_id == doc_id:
+                existing_win = w
+                break
+        if existing_win is not None:
+            self._windows.present(existing_win)
+            return
+        win = TextDocumentWindow(doc_id, doc["title"], doc.get("html", ""))
+        win.content_changed.connect(self._on_text_doc_changed)
+        self._windows.present(win)
+
+    def _rename_text_document(self, doc_id: str) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        doc = self._text_docs.get(doc_id)
+        if doc is None:
+            return
+        new_title, ok = QInputDialog.getText(
+            self, "Rename document", "Document name:", text=doc["title"]
+        )
+        if ok and new_title.strip():
+            doc["title"] = new_title.strip()
+            # Update any open editor's window title.
+            for w in self._windows.widgets_of_type(TextDocumentWindow):
+                if w.doc_id == doc_id:
+                    w.setWindowTitle(new_title.strip())
+                    break
+            self._refresh_project_tree()
+            self._mark_project_dirty()
+
+    def _delete_text_document(self, doc_id: str) -> None:
+        doc = self._text_docs.get(doc_id)
+        if doc is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete document",
+            f"Delete \"{doc['title']}\"?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        # Close any open window first.
+        for w in list(self._windows.widgets_of_type(TextDocumentWindow)):
+            if w.doc_id == doc_id:
+                w.close()
+                break
+        del self._text_docs[doc_id]
+        self._refresh_project_tree()
+        self._mark_project_dirty()
+
+    def _on_text_doc_changed(self, doc_id: str, html: str) -> None:
+        doc = self._text_docs.get(doc_id)
+        if doc is not None:
+            doc["html"] = html
+            self._mark_project_dirty()
+
+    # ── Report helpers ────────────────────────────────────────────────────
 
     def _report_header(self, doc, title: str) -> None:
         doc.add_heading(title, level=1)
