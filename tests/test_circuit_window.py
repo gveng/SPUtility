@@ -13,11 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPoint
 
 from sparams_utility.circuit_solver import ChannelSimResult
 from sparams_utility.models.circuit import DriverSpec
 from sparams_utility.models.state import AppState
-from sparams_utility.ui.circuit_window import BlockPreviewWidget, CircuitWindow
+from sparams_utility.ui.circuit_window import BlockPreviewWidget, CircuitBlockItem, CircuitWindow
 from sparams_utility.ui.main_window import MainWindow
 
 
@@ -100,6 +101,66 @@ class CircuitWindowEyeWindowTests(unittest.TestCase):
         self.assertEqual(emitted_payloads[0]["data_format"], "RI")
         self.assertEqual(emitted_payloads[0]["frequency_unit"], "GHz")
         self.assertEqual(emitted_payloads[0]["file_name"], "My Export")
+
+
+class CircuitWindowTransformActionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self.main_window = MainWindow(AppState())
+        self.circuit_window = CircuitWindow(self.main_window._state, window_number=1)
+        self.main_window._windows.present(self.circuit_window)
+
+    def tearDown(self) -> None:
+        self.main_window._project_dirty = False
+        self.main_window.close()
+
+    def _add_port_ground_block(self, *, rotation_deg: int = 0):
+        instance = self.circuit_window._document.add_instance(
+            source_file_id="port_ground",
+            display_label="P1",
+            nports=1,
+            position_x=0.0,
+            position_y=0.0,
+            block_kind="port_ground",
+            rotation_deg=rotation_deg,
+        )
+        block_item = CircuitBlockItem(self.circuit_window._scene, instance)
+        self.circuit_window._scene.register_block(block_item)
+        return instance
+
+    def _choose_context_action(self, action_text: str):
+        def _fake_exec(menu, _global_pos):
+            for action in menu.actions():
+                if action.text() == action_text:
+                    return action
+            return None
+
+        return _fake_exec
+
+    def test_mirror_horizontal_toggles_horizontal_flag_at_zero_rotation(self) -> None:
+        instance = self._add_port_ground_block(rotation_deg=0)
+
+        with patch("sparams_utility.ui.circuit_window.QMenu.exec", new=self._choose_context_action("Mirror horizontal")):
+            self.circuit_window._show_block_context_menu(instance.instance_id, QPoint(0, 0))
+
+        updated = self.circuit_window._document.get_instance(instance.instance_id)
+        self.assertIsNotNone(updated)
+        self.assertTrue(updated.mirror_horizontal)
+        self.assertFalse(updated.mirror_vertical)
+
+    def test_mirror_horizontal_after_90_deg_toggles_vertical_local_flag(self) -> None:
+        instance = self._add_port_ground_block(rotation_deg=90)
+
+        with patch("sparams_utility.ui.circuit_window.QMenu.exec", new=self._choose_context_action("Mirror horizontal")):
+            self.circuit_window._show_block_context_menu(instance.instance_id, QPoint(0, 0))
+
+        updated = self.circuit_window._document.get_instance(instance.instance_id)
+        self.assertIsNotNone(updated)
+        self.assertFalse(updated.mirror_horizontal)
+        self.assertTrue(updated.mirror_vertical)
 
 
 if __name__ == "__main__":

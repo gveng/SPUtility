@@ -589,42 +589,43 @@ class BlockPreviewWidget(QWidget):
         painter.drawLine(QPointF(gnd_x + 6.0, y - gw * 0.25), QPointF(gnd_x + 6.0, y + gw * 0.25))
 
     def _draw_differential_port_symbol(self, painter: QPainter, rect: QRectF) -> None:
+        """Palette preview: standard horizontal resistor with hex markers at both ends."""
         fg = QColor("#1e293b")
-        y = rect.center().y()
+        cy = rect.center().y()
         x0 = rect.left()
         x3 = rect.right()
-        terminal_length = min(20.0, rect.width() * 0.24)
-        x1 = x0 + terminal_length
-        x2 = x3 - terminal_length
+        tl = min(20.0, rect.width() * 0.24)  # terminal lead length
+        x1 = x0 + tl
+        x2 = x3 - tl
+        half_tl = tl / 2.0
         painter.setPen(QPen(fg, 2.0))
-        # Hex port markers
+        # Hex port markers at left and right centre
         painter.setBrush(QBrush(QColor("#ffffff")))
-        painter.drawPolygon(_hex_port_polygon(float(x0), float(y), _PORT_RADIUS))
-        painter.drawPolygon(_hex_port_polygon(float(x3), float(y), _PORT_RADIUS))
-        # Box leaving 50% of terminals outside
-        half_term = terminal_length / 2.0
-        box = QRectF(x1 - half_term, rect.top() + 2.0, (x2 + half_term) - (x1 - half_term), rect.height() - 4.0)
+        painter.drawPolygon(_hex_port_polygon(float(x0), float(cy), _PORT_RADIUS))
+        painter.drawPolygon(_hex_port_polygon(float(x3), float(cy), _PORT_RADIUS))
         painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(box, 4.0, 4.0)
         # Terminal leads
-        painter.drawLine(QPointF(x0, y), QPointF(x1, y))
-        painter.drawLine(QPointF(x2, y), QPointF(x3, y))
-        # Horizontal zigzag (same as R)
+        painter.drawLine(QPointF(x0, cy), QPointF(x1, cy))
+        painter.drawLine(QPointF(x2, cy), QPointF(x3, cy))
+        # Bounding box with half-terminals exposed
+        box = QRectF(x1 - half_tl, rect.top() + 2.0, (x2 + half_tl) - (x1 - half_tl), rect.height() - 4.0)
+        painter.drawRoundedRect(box, 4.0, 4.0)
+        # Horizontal zigzag representing port impedance
         zig_segments = 7
         step = (x2 - x1) / zig_segments
-        amplitude = abs(step) * 1.7320508076 * 0.75  # tan(60 deg), 75% length
-        points = [
-            QPointF(x1, y),
-            QPointF(x1 + step, y - amplitude),
-            QPointF(x1 + 2 * step, y + amplitude),
-            QPointF(x1 + 3 * step, y - amplitude),
-            QPointF(x1 + 4 * step, y + amplitude),
-            QPointF(x1 + 5 * step, y - amplitude),
-            QPointF(x1 + 6 * step, y + amplitude),
-            QPointF(x2, y),
+        amplitude = abs(step) * 1.7320508076 * 0.75
+        pts = [
+            QPointF(x1, cy),
+            QPointF(x1 + step, cy - amplitude),
+            QPointF(x1 + 2 * step, cy + amplitude),
+            QPointF(x1 + 3 * step, cy - amplitude),
+            QPointF(x1 + 4 * step, cy + amplitude),
+            QPointF(x1 + 5 * step, cy - amplitude),
+            QPointF(x1 + 6 * step, cy + amplitude),
+            QPointF(x2, cy),
         ]
-        for idx in range(len(points) - 1):
-            painter.drawLine(points[idx], points[idx + 1])
+        for idx in range(len(pts) - 1):
+            painter.drawLine(pts[idx], pts[idx + 1])
 
     def _draw_gnd_symbol(self, painter: QPainter, rect: QRectF) -> None:
         fg = QColor("#1e293b")
@@ -1881,9 +1882,9 @@ class CircuitBlockItem(QGraphicsObject):
         self._symbol_scale = max(0.5, min(3.0, float(getattr(instance, "symbol_scale", 1.0))))
         self._is_touchstone = instance.block_kind == "touchstone"
         self._block_width = _BLOCK_WIDTH * self._symbol_scale
-        if instance.block_kind in {"lumped_r", "lumped_l", "lumped_c", "port_ground", "gnd", "driver_se", "eyescope_se", "scope_se", * _TRANSIENT_SOURCE_KINDS}:
+        if instance.block_kind in {"lumped_r", "lumped_l", "lumped_c", "port_ground", "port_diff", "gnd", "driver_se", "eyescope_se", "scope_se", * _TRANSIENT_SOURCE_KINDS}:
             self._body_height = (2.0 * _GRID_SIZE) * self._symbol_scale
-        elif instance.block_kind in {"port_diff", "driver_diff", "eyescope_diff", "scope_diff"}:
+        elif instance.block_kind in {"driver_diff", "eyescope_diff", "scope_diff"}:
             # Taller differential symbols keep +/- pins clearly separated and clickable.
             self._body_height = (3.0 * _GRID_SIZE) * self._symbol_scale
         elif instance.block_kind == "net_node":
@@ -2058,10 +2059,10 @@ class CircuitBlockItem(QGraphicsObject):
         if self.instance.block_kind == "port_ground":
             return 0.0, self._body_height / 2.0
         if self.instance.block_kind == "port_diff":
-            cy = self._body_height / 2.0
+            cy = self._body_height / 2.0  # = _GRID_SIZE with 2*_GRID_SIZE body
             if port_number == 1:
-                return 0.0, cy - (_GRID_SIZE / 2.0)
-            return self._block_width, cy + (_GRID_SIZE / 2.0)
+                return 0.0, cy          # left centre — same convention as lumped_r
+            return self._block_width, cy  # right centre
         if self.instance.block_kind == "driver_se":
             return self._block_width, self._body_height / 2.0
         if self.instance.block_kind in _TRANSIENT_SOURCE_KINDS:
@@ -2261,25 +2262,25 @@ class CircuitBlockItem(QGraphicsObject):
     def _draw_ground_symbol(self, painter: QPainter, rect: QRectF) -> None:
         scale = 1.0 if self._is_touchstone else self._symbol_scale
         y = rect.height() / 2.0
-        port_x = self._port_items[1].pos().x()
-        total_w = _BLOCK_WIDTH * scale
-        right_end = port_x + total_w
-        terminal_length = 20.0 * scale
-        x1 = port_x + terminal_length
-        x2 = right_end - terminal_length
+        p1x = self._port_items[1].pos().x()
+        bw = rect.width()
+        # Detect which side the pin is on; draw toward the opposite edge.
+        d = 1.0 if p1x <= bw / 2.0 else -1.0
+        tl = 20.0 * scale                  # terminal lead length
+        x1 = p1x + d * tl                  # inner end of port lead / start of zigzag
+        far_x = p1x + d * bw               # GND symbol position
+        x2 = far_x - d * tl               # end of zigzag / start of GND lead
         fg = QColor("#1e293b")
         painter.setPen(QPen(fg, 2.0))
-        # Box leaving 50% of terminals outside
-        half_term = terminal_length / 2.0
-        box = QRectF(x1 - half_term, 2.0, (x2 + half_term) - (x1 - half_term), rect.height() - 4.0)
+        # Box with half-terminals exposed on both sides
+        half_tl = tl / 2.0
+        box = QRectF(min(x1, x2) - half_tl, 2.0, abs(x2 - x1) + tl, rect.height() - 4.0)
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(box, 3.0, 3.0)
-        # Left terminal lead (from port to zigzag)
-        painter.drawLine(QPointF(port_x, y), QPointF(x1, y))
-        # Right terminal lead (from zigzag to GND symbol)
-        gnd_x = right_end
-        painter.drawLine(QPointF(x2, y), QPointF(gnd_x, y))
-        # Horizontal zigzag
+        # Port lead and GND lead
+        painter.drawLine(QPointF(p1x, y), QPointF(x1, y))
+        painter.drawLine(QPointF(x2, y), QPointF(far_x, y))
+        # Horizontal zigzag (step sign follows d so drawing is always port→GND)
         zig_segments = 7
         step = (x2 - x1) / zig_segments
         amplitude = abs(step) * 1.7320508076 * 0.75
@@ -2295,48 +2296,56 @@ class CircuitBlockItem(QGraphicsObject):
         ]
         for idx in range(len(points) - 1):
             painter.drawLine(points[idx], points[idx + 1])
-        # GND symbol at right end
+        # GND symbol — bars grow in direction d away from the resistor
         gw = 10.0 * scale
-        painter.drawLine(QPointF(gnd_x, y - gw), QPointF(gnd_x, y + gw))
-        painter.drawLine(QPointF(gnd_x + 3.0, y - gw * 0.6), QPointF(gnd_x + 3.0, y + gw * 0.6))
-        painter.drawLine(QPointF(gnd_x + 6.0, y - gw * 0.25), QPointF(gnd_x + 6.0, y + gw * 0.25))
+        painter.drawLine(QPointF(far_x, y - gw), QPointF(far_x, y + gw))
+        painter.drawLine(QPointF(far_x + d * 3.0, y - gw * 0.6), QPointF(far_x + d * 3.0, y + gw * 0.6))
+        painter.drawLine(QPointF(far_x + d * 6.0, y - gw * 0.25), QPointF(far_x + d * 6.0, y + gw * 0.25))
 
     def _draw_diff_symbol(self, painter: QPainter, rect: QRectF) -> None:
-        scale = 1.0 if self._is_touchstone else self._symbol_scale
-        y = rect.height() / 2.0
-        port_left = self._port_items[1].pos().x()
-        port_right = self._port_items[2].pos().x()
-        terminal_length = 20.0 * scale
-        x1 = port_left + terminal_length if port_left <= port_right else port_left - terminal_length
-        x2 = port_right - terminal_length if port_left <= port_right else port_right + terminal_length
+        """Differential port: standard horizontal resistor.
+        P1 exits left-centre, P2 exits right-centre.
+        Reads actual port positions so the drawing stays correct after any mirror.
+        """
+        scale = self._symbol_scale
+        p1 = self._port_items[1].pos()
+        p2 = self._port_items[2].pos()
+        # Both pins share the same y (body centre); pick from P1
+        cy = p1.y()
+        # Sort by x so lead/box math is always left→right
+        if p1.x() <= p2.x():
+            px_left, px_right = p1.x(), p2.x()
+        else:
+            px_left, px_right = p2.x(), p1.x()
+        tl = min(20.0 * scale, (px_right - px_left) * 0.22)  # terminal lead
+        x1 = px_left + tl      # start of zigzag body
+        x2 = px_right - tl     # end of zigzag body
+        half_tl = tl / 2.0
         fg = QColor("#1e293b")
         painter.setPen(QPen(fg, 2.0))
-        # Box leaving 50% of terminals outside
-        half_term = terminal_length / 2.0
-        bx0 = min(x1, x2) - half_term
-        bx1 = max(x1, x2) + half_term
-        box = QRectF(bx0, 2.0, bx1 - bx0, rect.height() - 4.0)
         painter.setBrush(Qt.NoBrush)
+        # Bounding box with half-terminals exposed
+        box = QRectF(x1 - half_tl, 2.0, (x2 + half_tl) - (x1 - half_tl), rect.height() - 4.0)
         painter.drawRoundedRect(box, 4.0, 4.0)
-        # Terminal leads
-        painter.drawLine(QPointF(port_left, y), QPointF(x1, y))
-        painter.drawLine(QPointF(x2, y), QPointF(port_right, y))
-        # Horizontal zigzag (same as R)
+        # Terminal leads from port pins to the box edges
+        painter.drawLine(QPointF(px_left, cy), QPointF(x1, cy))
+        painter.drawLine(QPointF(x2, cy), QPointF(px_right, cy))
+        # Horizontal zigzag representing port impedance
         zig_segments = 7
         step = (x2 - x1) / zig_segments
-        amplitude = abs(step) * 1.7320508076 * 0.75  # tan(60 deg), 75% length
+        amplitude = abs(step) * 1.7320508076 * 0.75
         points = [
-            QPointF(x1, y),
-            QPointF(x1 + step, y - amplitude),
-            QPointF(x1 + 2 * step, y + amplitude),
-            QPointF(x1 + 3 * step, y - amplitude),
-            QPointF(x1 + 4 * step, y + amplitude),
-            QPointF(x1 + 5 * step, y - amplitude),
-            QPointF(x1 + 6 * step, y + amplitude),
-            QPointF(x2, y),
+            QPointF(x1, cy),
+            QPointF(x1 + step, cy - amplitude),
+            QPointF(x1 + 2 * step, cy + amplitude),
+            QPointF(x1 + 3 * step, cy - amplitude),
+            QPointF(x1 + 4 * step, cy + amplitude),
+            QPointF(x1 + 5 * step, cy - amplitude),
+            QPointF(x1 + 6 * step, cy + amplitude),
+            QPointF(x2, cy),
         ]
-        for idx in range(len(points) - 1):
-            painter.drawLine(points[idx], points[idx + 1])
+        for a, b in zip(points, points[1:], strict=False):
+            painter.drawLine(a, b)
 
     def _draw_gnd_symbol(self, painter: QPainter, rect: QRectF) -> None:
         del painter
@@ -3703,6 +3712,10 @@ class CircuitWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             self.setWindowIcon(app.windowIcon())
+            screen = app.primaryScreen()
+            if screen is not None:
+                ag = screen.availableGeometry()
+                self.move(ag.left(), ag.top())
 
         self._state = state
         self._document = CircuitDocument()
@@ -5570,19 +5583,21 @@ class CircuitWindow(QMainWindow):
             )
             return
         if chosen is mirror_h_action:
+            swap_mirror_axes = (instance.rotation_deg // 90) % 2 == 1
             self._apply_instance_transform(
                 instance_id,
                 rotation_deg=instance.rotation_deg,
-                mirror_horizontal=not instance.mirror_horizontal,
-                mirror_vertical=instance.mirror_vertical,
+                mirror_horizontal=(instance.mirror_horizontal if swap_mirror_axes else not instance.mirror_horizontal),
+                mirror_vertical=(not instance.mirror_vertical if swap_mirror_axes else instance.mirror_vertical),
             )
             return
         if chosen is mirror_v_action:
+            swap_mirror_axes = (instance.rotation_deg // 90) % 2 == 1
             self._apply_instance_transform(
                 instance_id,
                 rotation_deg=instance.rotation_deg,
-                mirror_horizontal=instance.mirror_horizontal,
-                mirror_vertical=not instance.mirror_vertical,
+                mirror_horizontal=(not instance.mirror_horizontal if swap_mirror_axes else instance.mirror_horizontal),
+                mirror_vertical=(instance.mirror_vertical if swap_mirror_axes else not instance.mirror_vertical),
             )
 
     def _open_tline_calculator(self, instance_id: str) -> None:

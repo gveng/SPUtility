@@ -57,7 +57,7 @@ class MainWindow(QMainWindow):
     def __init__(self, state: AppState) -> None:
         super().__init__()
         self.setWindowTitle(f"{pkg.__app_name__}  {pkg.__version__}")
-        self.resize(360, 800)
+        self.resize(600, 800)
         app = QApplication.instance()
         if app is not None:
             self.setWindowIcon(app.windowIcon())
