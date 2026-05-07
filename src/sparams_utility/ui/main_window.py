@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFileDialog,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -41,6 +42,7 @@ from sparams_utility.ui.circuit_window import CircuitWindow
 from sparams_utility.ui.eye_diagram_window import EyeDiagramWindow
 from sparams_utility.ui.plot_window import PlotWindow
 from sparams_utility.ui.tdr_window import TdrWindow
+from sparams_utility.ui.via_window import ViaWindow
 from sparams_utility.ui.table_models import MagnitudeTableModel, RawDataTableModel
 from sparams_utility.ui.table_window import TableWindow
 from sparams_utility.ui.text_document_window import TextDocumentWindow
@@ -67,6 +69,7 @@ class MainWindow(QMainWindow):
         self._plot_counter: int = 0
         self._tdr_counter: int = 0
         self._circuit_counter: int = 0
+        self._via_counter: int = 0
         self._project_dirty: bool = False
         self._project_path: str | None = None
         self._recent_projects: list[str] = []
@@ -76,6 +79,7 @@ class MainWindow(QMainWindow):
             "sp": {},
             "tdr": {},
             "circuit": {},
+            "via": {},
         }
         self._open_windows: dict[tuple[str, str], object] = {}
         self._open_window_keys: dict[int, tuple[str, str]] = {}
@@ -110,6 +114,7 @@ class MainWindow(QMainWindow):
 
         # ── File ──────────────────────────────────────────────────────────
         file_menu = self.menuBar().addMenu("File")
+        file_menu.addAction("New Project", self._new_project)
         file_menu.addAction("Open Project", self._open_project)
         file_menu.addAction("Save Project", self._save_project)
         file_menu.addAction("Save Project As", self._save_project_as)
@@ -133,10 +138,12 @@ class MainWindow(QMainWindow):
 
         tools_menu = self.menuBar().addMenu("Tools")
         tools_menu.addAction("New Text Document", self._new_text_document)
+        tools_menu.addAction("Via Analysis", self._open_via_window)
         tools_menu.addSeparator()
-        tools_menu.addAction("Create SP Plots Reports", self._create_sp_plots_report)
-        tools_menu.addAction("Create TDR plots reports", self._create_tdr_plots_report)
-        tools_menu.addAction("Create EYE diagrams report", self._create_eye_diagrams_report)
+        reports_menu = tools_menu.addMenu("Report")
+        reports_menu.addAction("Create SP Plots Reports", self._create_sp_plots_report)
+        reports_menu.addAction("Create TDR plots reports", self._create_tdr_plots_report)
+        reports_menu.addAction("Create EYE diagrams report", self._create_eye_diagrams_report)
 
         circuit_menu = self.menuBar().addMenu("Circuit")
         circuit_menu.addAction("Open circuit composer", self._open_circuit_window)
@@ -249,6 +256,7 @@ class MainWindow(QMainWindow):
             "circuits": "circuit",
             "plots": "sp",
             "tdr": "tdr",
+            "via": "via",
             "eye": "eye-file",
             "transient": "transient-plot",
             "tables": "sparam-file",
@@ -270,6 +278,8 @@ class MainWindow(QMainWindow):
             return self._icon_for_kind("sp")
         if isinstance(widget, TdrWindow):
             return self._icon_for_kind("tdr")
+        if isinstance(widget, ViaWindow):
+            return self._icon_for_kind("via")
         if isinstance(widget, EyeDiagramWindow):
             return self._icon_for_kind("eye-file")
         if isinstance(widget, TransientResultWindow):
@@ -315,6 +325,8 @@ class MainWindow(QMainWindow):
         if isinstance(widget, PlotWindow):
             return widget.export_project_state()
         if isinstance(widget, TdrWindow):
+            return widget.export_project_state()
+        if isinstance(widget, ViaWindow):
             return widget.export_project_state()
         if isinstance(widget, CircuitWindow):
             return widget.export_project_state()
@@ -735,7 +747,7 @@ class MainWindow(QMainWindow):
 
         flat_entries: list[tuple[str, str, str]] = []
         nested_plot_entries: dict[str, list[tuple[str, str, str]]] = {}
-        for kind in ("circuit", "sp", "tdr"):
+        for kind in ("circuit", "sp", "tdr", "via"):
             for entry in self._window_registry[kind].values():
                 entry_id = str(entry.get("id", ""))
                 title = str(entry.get("title", "Window"))
@@ -1463,6 +1475,21 @@ class MainWindow(QMainWindow):
             self._windows.present(widget)
             self._refresh_project_tree()
 
+        if kind == "via":
+            self._via_counter = max(self._via_counter, win_number)
+            widget = ViaWindow(window_number=max(1, win_number))
+            if state:
+                widget.import_project_state(state)
+            widget.project_modified.connect(self._mark_project_dirty)
+            widget.simulation_completed.connect(self._on_via_simulation_completed)
+            if isinstance(window_size, list) and len(window_size) == 2:
+                widget.resize(int(window_size[0]), int(window_size[1]))
+            else:
+                widget.resize(1300, 760)
+            self._bind_open_window("via", entry_id, widget)
+            self._windows.present(widget)
+            self._refresh_project_tree()
+
     def _open_output_file_from_tree(self, file_name: str, output_kind: str) -> None:
         if not file_name:
             return
@@ -1875,9 +1902,9 @@ class MainWindow(QMainWindow):
         plot_windows: list[dict] = []
         tdr_windows: list[dict] = []
         circuit_windows: list[dict] = []
-        registry_payload: dict[str, list[dict]] = {"sp": [], "tdr": [], "circuit": []}
+        registry_payload: dict[str, list[dict]] = {"sp": [], "tdr": [], "circuit": [], "via": []}
 
-        for kind in ("sp", "tdr", "circuit"):
+        for kind in ("sp", "tdr", "circuit", "via"):
             for entry in self._window_registry[kind].values():
                 out = dict(entry)
                 registry_payload[kind].append(out)
@@ -2359,7 +2386,16 @@ class MainWindow(QMainWindow):
         return True
 
     def _save_project_to_path(self, file_path: str) -> bool:
-        self._project_data_dir = Path(file_path).with_name(Path(file_path).stem + "_Data")
+        project_file = Path(file_path)
+        try:
+            project_file.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.critical(self, "Save failed", f"Could not create project folder:\n{exc}")
+            return False
+
+        if not self._ensure_project_runtime_dirs(file_path):
+            return False
+
         export_errors = self._export_project_data_files(self._project_data_dir)
         payload = self._build_project_payload()
 
@@ -2393,6 +2429,38 @@ class MainWindow(QMainWindow):
     def _sanitize_file_stem(self, text: str, fallback: str) -> str:
         safe = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in text).strip("_")
         return safe or fallback
+
+    def _ensure_project_runtime_dirs(self, file_path: str) -> bool:
+        project_file = Path(file_path)
+        data_dir = project_file.with_name(f"{project_file.stem}_Data")
+        via_dir = project_file.with_name(f"{project_file.stem}_ViaAnalyzer")
+        data_existed = data_dir.exists()
+        via_existed = via_dir.exists()
+        self._project_data_dir = data_dir
+        try:
+            data_dir.mkdir(parents=True, exist_ok=True)
+            via_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Project folders",
+                "Could not create project runtime folders automatically:\n"
+                f"{exc}\n\n"
+                f"Expected folders:\n- {data_dir}\n- {via_dir}",
+            )
+            return False
+
+        created: list[str] = []
+        if not data_existed:
+            created.append(data_dir.name)
+        if not via_existed:
+            created.append(via_dir.name)
+        if created:
+            self.statusBar().showMessage(
+                "Created project folders: " + ", ".join(created),
+                8000,
+            )
+        return True
 
     def _render_sparameter_plot_pixmap_from_text(self, touchstone_text: str, title: str) -> QPixmap | None:
         try:
@@ -2517,14 +2585,18 @@ class MainWindow(QMainWindow):
         return errors
 
     def _save_project_as(self) -> bool:
+        default = self._project_path or "SPUtility_project.json"
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Project As",
-            self._project_path or "SPUtility_project.json",
+            default,
             "SPUtility Project (*.json);;All files (*)",
         )
         if not file_path:
             return False
+
+        if not file_path.lower().endswith(".json"):
+            file_path += ".json"
 
         return self._save_project_to_path(file_path)
 
@@ -2562,7 +2634,7 @@ class MainWindow(QMainWindow):
         self._project_dirty = False
         self._project_path = None
         self._project_data_dir = None
-        self._window_registry = {"sp": {}, "tdr": {}, "circuit": {}}
+        self._window_registry = {"sp": {}, "tdr": {}, "circuit": {}, "via": {}}
         self._open_windows = {}
         self._open_window_keys = {}
         self._text_docs = {}
@@ -2575,6 +2647,25 @@ class MainWindow(QMainWindow):
             return
 
         self._reset_project_workspace()
+
+    def _new_project(self) -> None:
+        if not self._confirm_project_close():
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "New Project",
+            "SPUtility_project.json",
+            "SPUtility Project (*.json);;All files (*)",
+        )
+        if not file_path:
+            return
+
+        if not file_path.lower().endswith(".json"):
+            file_path += ".json"
+
+        self._reset_project_workspace()
+        self._save_project_to_path(file_path)
 
     def _open_project(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -2619,7 +2710,7 @@ class MainWindow(QMainWindow):
 
         registry = payload.get("window_registry")
         if isinstance(registry, dict):
-            for kind in ("sp", "tdr", "circuit"):
+            for kind in ("sp", "tdr", "circuit", "via"):
                 raw_entries = registry.get(kind, [])
                 if not isinstance(raw_entries, list):
                     continue
@@ -2644,7 +2735,7 @@ class MainWindow(QMainWindow):
                         "parent_circuit_entry_id": item.get("parent_circuit_entry_id"),
                     }
 
-            for kind in ("sp", "tdr", "circuit"):
+            for kind in ("sp", "tdr", "circuit", "via"):
                 for entry_id, entry in self._window_registry[kind].items():
                     if bool(entry.get("is_open", False)):
                         self._activate_or_open_window_entry(kind, entry_id)
@@ -2730,7 +2821,7 @@ class MainWindow(QMainWindow):
                 f"Loaded {len(file_paths)} file(s), restored {restored_plot} plot window(s), restored {restored_tdr} TDR window(s), and restored {restored_circuit} circuit window(s).",
             )
         self._project_path = file_path
-        self._project_data_dir = Path(file_path).with_name(Path(file_path).stem + "_Data")
+        self._ensure_project_runtime_dirs(file_path)
         self._project_dirty = False
         self._push_recent_project(file_path)
 
@@ -2839,6 +2930,30 @@ class MainWindow(QMainWindow):
         self._windows.present(tdr_win)
         self._mark_project_dirty()
         self._refresh_project_tree()
+
+    def _open_via_window(self) -> None:
+        self._via_counter += 1
+        via_win = ViaWindow(window_number=self._via_counter)
+        via_win.project_modified.connect(self._mark_project_dirty)
+        via_win.simulation_completed.connect(self._on_via_simulation_completed)
+        via_win.resize(1500, 860)
+        entry_id = self._register_window_entry("via", via_win)
+        self._bind_open_window("via", entry_id, via_win)
+        self._windows.present(via_win)
+        self._mark_project_dirty()
+        self._refresh_project_tree()
+
+    def _on_via_simulation_completed(self, result_path: str) -> None:
+        """Called when an EMerge simulation finishes successfully.
+
+        Loads the result touchstone file into the project and opens a new
+        S-parameter plot window to display it.
+        """
+        from pathlib import Path as _Path
+        if not _Path(result_path).exists():
+            return
+        self._load_touchstone_files([result_path])
+        self._open_plot_window()
 
     def _open_circuit_window(self) -> None:
         circuit_number = self._next_available_circuit_number()

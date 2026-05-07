@@ -1,0 +1,288 @@
+{
+  "app_name": "S-Params Studio",
+  "app_version": "2.6.8 Beta",
+  "saved_at": "2026-05-07T08:56:09",
+  "loaded_files": [],
+  "plots": [],
+  "tdr_plots": [],
+  "circuits": [
+    {
+      "window_number": 1,
+      "name": "Via Analysis #1",
+      "stackup": [
+        {
+          "name": "L1 (Signal)",
+          "thickness_um": 35.0,
+          "is_copper": true,
+          "role": "Signal",
+          "net": "",
+          "antipad_um": 0.0,
+          "er": 1.0,
+          "tand": 0.0
+        },
+        {
+          "name": "Core",
+          "thickness_um": 200.0,
+          "is_copper": false,
+          "role": "Dielectric",
+          "net": "",
+          "antipad_um": 0.0,
+          "er": 3.76,
+          "tand": 0.009
+        },
+        {
+          "name": "L2 (GND)",
+          "thickness_um": 35.0,
+          "is_copper": true,
+          "role": "Plane",
+          "net": "GND",
+          "antipad_um": 800.0,
+          "er": 1.0,
+          "tand": 0.0
+        },
+        {
+          "name": "Prepreg",
+          "thickness_um": 1000.0,
+          "is_copper": false,
+          "role": "Dielectric",
+          "net": "",
+          "antipad_um": 0.0,
+          "er": 4.2,
+          "tand": 0.02
+        },
+        {
+          "name": "L3 (Power)",
+          "thickness_um": 35.0,
+          "is_copper": true,
+          "role": "Plane",
+          "net": "PWR",
+          "antipad_um": 800.0,
+          "er": 1.0,
+          "tand": 0.0
+        },
+        {
+          "name": "Core",
+          "thickness_um": 200.0,
+          "is_copper": false,
+          "role": "Dielectric",
+          "net": "",
+          "antipad_um": 0.0,
+          "er": 3.76,
+          "tand": 0.009
+        },
+        {
+          "name": "L4 (Signal)",
+          "thickness_um": 35.0,
+          "is_copper": true,
+          "role": "Signal",
+          "net": "",
+          "antipad_um": 0.0,
+          "er": 1.0,
+          "tand": 0.0
+        }
+      ],
+      "via": {
+        "drill_um": 250.0,
+        "pad_um": 500.0,
+        "antipad_um": 800.0,
+        "via_from_idx": 0,
+        "via_to_idx": 3,
+        "stub_idx": -1,
+        "is_differential": false,
+        "diff_spacing_um": 400.0
+      },
+      "stitching": {
+        "enabled": true,
+        "pattern": "Ring",
+        "from_idx": 0,
+        "to_idx": 3,
+        "deleted_indices": [],
+        "n_vias": 8,
+        "ring_radius_um": 2000.0,
+        "drill_um": 250.0,
+        "pad_um": 500.0
+      },
+      "feed": {
+        "start": {
+          "type": "Trace",
+          "trace_width_um": 250.0,
+          "trace_length_um": 2000.0,
+          "trace_angle_deg": 180.0
+        },
+        "end": {
+          "type": "Trace",
+          "trace_width_um": 250.0,
+          "trace_length_um": 2000.0,
+          "trace_angle_deg": 0.0
+        }
+      },
+      "simulation": {
+        "f_start_ghz": 0.01,
+        "f_stop_ghz": 10.0,
+        "n_pts": 11,
+        "resolution_mm": 0.25,
+        "n_workers": 4,
+        "show_structure_in_emerge": true,
+        "show_labels_in_emerge": false,
+        "show_mesh_in_emerge": true
+      },
+      "view3d": {
+        "hidden_keys": []
+      },
+      "window_size": [
+        924,
+        578
+      ]
+    }
+  ],
+  "window_registry": {
+    "sp": [],
+    "tdr": [],
+    "circuit": [],
+    "via": [
+      {
+        "id": "via:c837564748",
+        "kind": "via",
+        "title": "Via Analysis #1",
+        "state": {
+          "window_number": 1,
+          "name": "Via Analysis #1",
+          "stackup": [
+            {
+              "name": "L1 (Signal)",
+              "thickness_um": 35.0,
+              "is_copper": true,
+              "role": "Signal",
+              "net": "",
+              "antipad_um": 0.0,
+              "er": 1.0,
+              "tand": 0.0
+            },
+            {
+              "name": "Core",
+              "thickness_um": 200.0,
+              "is_copper": false,
+              "role": "Dielectric",
+              "net": "",
+              "antipad_um": 0.0,
+              "er": 3.76,
+              "tand": 0.009
+            },
+            {
+              "name": "L2 (GND)",
+              "thickness_um": 35.0,
+              "is_copper": true,
+              "role": "Plane",
+              "net": "GND",
+              "antipad_um": 800.0,
+              "er": 1.0,
+              "tand": 0.0
+            },
+            {
+              "name": "Prepreg",
+              "thickness_um": 1000.0,
+              "is_copper": false,
+              "role": "Dielectric",
+              "net": "",
+              "antipad_um": 0.0,
+              "er": 4.2,
+              "tand": 0.02
+            },
+            {
+              "name": "L3 (Power)",
+              "thickness_um": 35.0,
+              "is_copper": true,
+              "role": "Plane",
+              "net": "PWR",
+              "antipad_um": 800.0,
+              "er": 1.0,
+              "tand": 0.0
+            },
+            {
+              "name": "Core",
+              "thickness_um": 200.0,
+              "is_copper": false,
+              "role": "Dielectric",
+              "net": "",
+              "antipad_um": 0.0,
+              "er": 3.76,
+              "tand": 0.009
+            },
+            {
+              "name": "L4 (Signal)",
+              "thickness_um": 35.0,
+              "is_copper": true,
+              "role": "Signal",
+              "net": "",
+              "antipad_um": 0.0,
+              "er": 1.0,
+              "tand": 0.0
+            }
+          ],
+          "via": {
+            "drill_um": 250.0,
+            "pad_um": 500.0,
+            "antipad_um": 800.0,
+            "via_from_idx": 0,
+            "via_to_idx": 3,
+            "stub_idx": -1,
+            "is_differential": false,
+            "diff_spacing_um": 400.0
+          },
+          "stitching": {
+            "enabled": true,
+            "pattern": "Ring",
+            "from_idx": 0,
+            "to_idx": 3,
+            "deleted_indices": [],
+            "n_vias": 8,
+            "ring_radius_um": 2000.0,
+            "drill_um": 250.0,
+            "pad_um": 500.0
+          },
+          "feed": {
+            "start": {
+              "type": "Trace",
+              "trace_width_um": 250.0,
+              "trace_length_um": 2000.0,
+              "trace_angle_deg": 180.0
+            },
+            "end": {
+              "type": "Trace",
+              "trace_width_um": 250.0,
+              "trace_length_um": 2000.0,
+              "trace_angle_deg": 0.0
+            }
+          },
+          "simulation": {
+            "f_start_ghz": 0.01,
+            "f_stop_ghz": 10.0,
+            "n_pts": 11,
+            "resolution_mm": 0.25,
+            "n_workers": 4,
+            "show_structure_in_emerge": true,
+            "show_labels_in_emerge": false,
+            "show_mesh_in_emerge": true
+          },
+          "view3d": {
+            "hidden_keys": []
+          }
+        },
+        "window_number": 1,
+        "is_open": true,
+        "eye_file": null,
+        "sparam_file": null,
+        "sparam_plot_file": null,
+        "transient_file": null,
+        "output_kind": null,
+        "solve_engine": null,
+        "parent_circuit_entry_id": null,
+        "window_size": [
+          924,
+          578
+        ]
+      }
+    ]
+  },
+  "text_documents": []
+}

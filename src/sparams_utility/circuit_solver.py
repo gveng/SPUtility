@@ -1224,23 +1224,52 @@ def _solve_linear_system(
     if matrix_a.size == 0:
         return np.empty_like(matrix_b)
 
-    condition = np.linalg.cond(matrix_a)
-    if np.isfinite(condition) and condition <= condition_limit:
-        try:
-            return linalg.solve(matrix_a, matrix_b, assume_a="gen", check_finite=False)
-        except linalg.LinAlgError:
-            pass
+    if matrix_a.shape[0] != matrix_a.shape[1]:
+        raise ValueError(f"{context} failed: system matrix must be square, got {matrix_a.shape}.")
+    if matrix_a.shape[0] != matrix_b.shape[0]:
+        raise ValueError(
+            f"{context} failed: incompatible shapes A={matrix_a.shape}, B={matrix_b.shape}."
+        )
+
+    if not np.all(np.isfinite(matrix_a)) or not np.all(np.isfinite(matrix_b)):
+        raise ValueError(f"{context} failed: matrix contains NaN/Inf values.")
+
+    # Prefer direct solve first. Avoid a condition-number SVD precheck because
+    # LAPACK can emit noisy diagnostics when presented with near-singular data.
+    try:
+        solution = linalg.solve(matrix_a, matrix_b, assume_a="gen", check_finite=False)
+        if np.all(np.isfinite(solution)):
+            return solution
+    except linalg.LinAlgError:
+        pass
 
     scale = max(float(np.linalg.norm(matrix_a, ord=np.inf)), 1.0)
+    if not np.isfinite(scale):
+        raise ValueError(f"{context} failed: non-finite matrix scaling factor.")
+
+    if condition_limit > 0.0:
+        try:
+            condition = np.linalg.cond(matrix_a)
+            if np.isfinite(condition) and condition > condition_limit:
+                regularization_factor = max(regularization_factor, 1e-10)
+        except Exception:
+            # Continue with regularization path when condition estimation is unstable.
+            pass
+
     regularization = regularization_factor * scale
     regularized = matrix_a + np.eye(matrix_a.shape[0], dtype=np.complex128) * regularization
     try:
-        return linalg.solve(regularized, matrix_b, assume_a="gen", check_finite=False)
+        solution = linalg.solve(regularized, matrix_b, assume_a="gen", check_finite=False)
+        if np.all(np.isfinite(solution)):
+            return solution
     except linalg.LinAlgError:
-        solution, *_ = linalg.lstsq(matrix_a, matrix_b, check_finite=False)
-        if not np.all(np.isfinite(solution)):
-            raise ValueError(f"{context} failed: matrix is singular or badly conditioned.")
-        return solution
+        pass
+
+    # Last resort: least-squares on the regularized system, then validate result.
+    solution, *_ = linalg.lstsq(regularized, matrix_b, check_finite=False)
+    if not np.all(np.isfinite(solution)):
+        raise ValueError(f"{context} failed: matrix is singular or badly conditioned.")
+    return solution
 
 
 def _interpolate_y_matrix(cache_entry: _TouchstoneInterpolationCache, target_freq: float) -> np.ndarray:
