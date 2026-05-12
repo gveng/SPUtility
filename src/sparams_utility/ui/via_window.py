@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -56,13 +57,13 @@ except ImportError:
 
 # ── Default stackup ───────────────────────────────────────────────────────────
 _DEFAULT_STACKUP = [
-    {"name": "L1 (Signal)",  "thickness_um": 35.0,   "is_copper": True,  "role": "Signal",     "net": "",    "antipad_um": 0.0,   "er": 1.0,  "tand": 0.0},
-    {"name": "Core",         "thickness_um": 200.0,  "is_copper": False, "role": "Dielectric", "net": "",    "antipad_um": 0.0,   "er": 3.76, "tand": 0.009},
-    {"name": "L2 (GND)",     "thickness_um": 35.0,   "is_copper": True,  "role": "Plane",      "net": "GND", "antipad_um": 800.0, "er": 1.0,  "tand": 0.0},
-    {"name": "Prepreg",      "thickness_um": 1000.0, "is_copper": False, "role": "Dielectric", "net": "",    "antipad_um": 0.0,   "er": 4.2,  "tand": 0.02},
-    {"name": "L3 (Power)",   "thickness_um": 35.0,   "is_copper": True,  "role": "Plane",      "net": "PWR", "antipad_um": 800.0, "er": 1.0,  "tand": 0.0},
-    {"name": "Core",         "thickness_um": 200.0,  "is_copper": False, "role": "Dielectric", "net": "",    "antipad_um": 0.0,   "er": 3.76, "tand": 0.009},
-    {"name": "L4 (Signal)",  "thickness_um": 35.0,   "is_copper": True,  "role": "Signal",     "net": "",    "antipad_um": 0.0,   "er": 1.0,  "tand": 0.0},
+    {"name": "L1 (Signal)",  "thickness_um": 35.0,   "is_copper": True,  "role": "Signal",     "net": "",    "er": 1.0,  "tand": 0.0},
+    {"name": "Core",         "thickness_um": 200.0,  "is_copper": False, "role": "Dielectric", "net": "",    "er": 3.76, "tand": 0.009},
+    {"name": "L2 (GND)",     "thickness_um": 35.0,   "is_copper": True,  "role": "Plane",      "net": "GND", "er": 1.0,  "tand": 0.0},
+    {"name": "Prepreg",      "thickness_um": 1000.0, "is_copper": False, "role": "Dielectric", "net": "",    "er": 4.2,  "tand": 0.02},
+    {"name": "L3 (Power)",   "thickness_um": 35.0,   "is_copper": True,  "role": "Plane",      "net": "PWR", "er": 1.0,  "tand": 0.0},
+    {"name": "Core",         "thickness_um": 200.0,  "is_copper": False, "role": "Dielectric", "net": "",    "er": 3.76, "tand": 0.009},
+    {"name": "L4 (Signal)",  "thickness_um": 35.0,   "is_copper": True,  "role": "Signal",     "net": "",    "er": 1.0,  "tand": 0.0},
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -383,6 +384,7 @@ class ViaWindow(QMainWindow):
         self._build_tab_stitching()
         self._build_tab_feed()
         self._build_tab_simulation()
+        self._build_tab_mesh()
         self._build_tab_script()
 
         # ---- Right panel ----
@@ -451,9 +453,9 @@ class ViaWindow(QMainWindow):
         vbox = QVBoxLayout(w)
 
         self._stackup_table = QTableWidget()
-        self._stackup_table.setColumnCount(8)
+        self._stackup_table.setColumnCount(7)
         self._stackup_table.setHorizontalHeaderLabels(
-            ["Layer Name", "Thick. (µm)", "Type", "Role", "Net", "Antipad (µm)", "εr", "tan δ"]
+            ["Layer Name", "Thick. (µm)", "Type", "Role", "Net", "εr", "tan δ"]
         )
         hdr = self._stackup_table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.Interactive)
@@ -463,9 +465,8 @@ class ViaWindow(QMainWindow):
         hdr.resizeSection(2, 95)
         hdr.resizeSection(3, 90)
         hdr.resizeSection(4, 60)
-        hdr.resizeSection(5, 95)
+        hdr.resizeSection(5, 55)
         hdr.resizeSection(6, 55)
-        hdr.resizeSection(7, 55)
         self._stackup_table.setMinimumHeight(200)
         vbox.addWidget(self._stackup_table)
 
@@ -474,9 +475,8 @@ class ViaWindow(QMainWindow):
         self._btn_remove_layer = QPushButton("Remove")
         self._btn_move_up      = QPushButton("Move Up")
         self._btn_move_down    = QPushButton("Move Down")
-        self._btn_apply_antipad_all = QPushButton("Apply Via Antipad To Plane Layers")
         for b in (self._btn_add_layer, self._btn_remove_layer,
-                  self._btn_move_up, self._btn_move_down, self._btn_apply_antipad_all):
+                  self._btn_move_up, self._btn_move_down):
             btn_row.addWidget(b)
         vbox.addLayout(btn_row)
         vbox.addStretch(1)
@@ -485,7 +485,6 @@ class ViaWindow(QMainWindow):
         self._btn_remove_layer.clicked.connect(self._stackup_remove)
         self._btn_move_up.clicked.connect(self._stackup_move_up)
         self._btn_move_down.clicked.connect(self._stackup_move_down)
-        self._btn_apply_antipad_all.clicked.connect(self._stackup_apply_plane_antipad_all)
 
         self._tabs.addTab(w, "Stackup")
 
@@ -515,13 +514,13 @@ class ViaWindow(QMainWindow):
                     net = "PWR"
             self._stackup_insert_row(
                 row["name"], row["thickness_um"], is_copper,
-                role, net, row.get("antipad_um", None), row["er"], row["tand"]
+                role, net, row["er"], row["tand"]
             )
         self._suppress_signals = False
         self._stackup_changed()
 
     def _stackup_insert_row(self, name: str, thick: float,
-                             is_copper: bool, role: str, net: str, antipad_um: float | None, er: float, tand: float,
+                             is_copper: bool, role: str, net: str, er: float, tand: float,
                              at_row: Optional[int] = None):
         tbl = self._stackup_table
         row = tbl.rowCount() if at_row is None else at_row
@@ -549,18 +548,13 @@ class ViaWindow(QMainWindow):
         net_item = QTableWidgetItem(net or "")
         tbl.setItem(row, 4, net_item)
 
-        antipad_text = "" if antipad_um is None else str(antipad_um)
-        antipad_item = QTableWidgetItem(antipad_text)
-        antipad_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        tbl.setItem(row, 5, antipad_item)
-
         er_item = QTableWidgetItem(str(er))
         er_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        tbl.setItem(row, 6, er_item)
+        tbl.setItem(row, 5, er_item)
 
         tand_item = QTableWidgetItem(str(tand))
         tand_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        tbl.setItem(row, 7, tand_item)
+        tbl.setItem(row, 6, tand_item)
 
         # Connect item changes
         tbl.itemChanged.connect(self._stackup_changed)
@@ -575,9 +569,8 @@ class ViaWindow(QMainWindow):
             combo        = tbl.cellWidget(r, 2)
             role_combo   = tbl.cellWidget(r, 3)
             net_item     = tbl.item(r, 4)
-            antipad_item = tbl.item(r, 5)
-            er_item      = tbl.item(r, 6)
-            tand_item    = tbl.item(r, 7)
+            er_item      = tbl.item(r, 5)
+            tand_item    = tbl.item(r, 6)
 
             name  = name_item.text()  if name_item  else ""
             try:
@@ -589,14 +582,6 @@ class ViaWindow(QMainWindow):
             if not is_copper:
                 role_text = "Dielectric"
             net_text = net_item.text().strip() if net_item else ""
-            antipad_um: float | None
-            if antipad_item and antipad_item.text().strip():
-                try:
-                    antipad_um = float(antipad_item.text())
-                except ValueError:
-                    antipad_um = None
-            else:
-                antipad_um = None
             try:
                 er    = float(er_item.text())   if er_item   else 1.0
             except ValueError:
@@ -608,7 +593,7 @@ class ViaWindow(QMainWindow):
 
             rows.append({"name": name, "thickness_um": thick,
                          "is_copper": is_copper, "role": role_text, "net": net_text,
-                         "antipad_um": antipad_um, "er": er, "tand": tand})
+                         "er": er, "tand": tand})
         return rows
 
     def _copper_layer_names(self) -> list[str]:
@@ -624,25 +609,7 @@ class ViaWindow(QMainWindow):
             self._rebuild_3d()
 
     def _stackup_add(self):
-        self._stackup_insert_row("New Layer", 100.0, False, "Dielectric", "", 0.0, 4.2, 0.02)
-        self._stackup_changed()
-
-    def _stackup_apply_plane_antipad_all(self):
-        if not hasattr(self, "_antipad_um"):
-            return
-        tbl = self._stackup_table
-        value = self._antipad_um.value()
-        self._suppress_signals = True
-        for row in range(tbl.rowCount()):
-            type_combo = tbl.cellWidget(row, 2)
-            role_combo = tbl.cellWidget(row, 3)
-            if type_combo and type_combo.currentText() == "Copper" and role_combo and role_combo.currentText() == "Plane":
-                item = tbl.item(row, 5)
-                if item is None:
-                    item = QTableWidgetItem()
-                    tbl.setItem(row, 5, item)
-                item.setText(str(value))
-        self._suppress_signals = False
+        self._stackup_insert_row("New Layer", 100.0, False, "Dielectric", "", 4.2, 0.02)
         self._stackup_changed()
 
     def _stackup_remove(self):
@@ -809,6 +776,8 @@ class ViaWindow(QMainWindow):
 
     def _diff_toggled(self, checked):
         self._diff_spacing.setEnabled(not checked)  # checked == SE → disable
+        if hasattr(self, "_feed_port_controls"):
+            self._feed_controls_changed()
         self._param_changed()
 
     # ── Tab 2 – Stitching ─────────────────────────────────────────────────
@@ -888,63 +857,125 @@ class ViaWindow(QMainWindow):
         w = QWidget()
         from PySide6.QtWidgets import QFormLayout
 
-        grp_a = QGroupBox("Feed On Start Layer")
-        form_a = QFormLayout(grp_a)
-        self._feed_start_type = QComboBox()
-        self._feed_start_type.addItems(["Coaxial", "Trace"])
-        self._feed_start_type.setCurrentIndex(1)
-        self._feed_start_trace_width_um = self._mk_dspin(25.0, 10000.0, 250.0, " µm")
-        self._feed_start_trace_length_um = self._mk_dspin(50.0, 50000.0, 2000.0, " µm")
-        self._feed_start_trace_angle_deg = self._mk_dspin(-180.0, 180.0, 180.0, "°", decimals=1)
-        form_a.addRow("Feed type:", self._feed_start_type)
-        form_a.addRow("Trace width (µm):", self._feed_start_trace_width_um)
-        form_a.addRow("Trace length (µm):", self._feed_start_trace_length_um)
-        form_a.addRow("Trace angle (deg):", self._feed_start_trace_angle_deg)
+        self._feed_port_groups: dict[int, QGroupBox] = {}
+        self._feed_port_controls: dict[int, dict[str, QDoubleSpinBox | QComboBox]] = {}
 
-        grp_b = QGroupBox("Feed On End Layer")
-        form_b = QFormLayout(grp_b)
-        self._feed_end_type = QComboBox()
-        self._feed_end_type.addItems(["Coaxial", "Trace"])
-        self._feed_end_type.setCurrentIndex(1)
-        self._feed_end_trace_width_um = self._mk_dspin(25.0, 10000.0, 250.0, " µm")
-        self._feed_end_trace_length_um = self._mk_dspin(50.0, 50000.0, 2000.0, " µm")
-        self._feed_end_trace_angle_deg = self._mk_dspin(-180.0, 180.0, 0.0, "°", decimals=1)
-        form_b.addRow("Feed type:", self._feed_end_type)
-        form_b.addRow("Trace width (µm):", self._feed_end_trace_width_um)
-        form_b.addRow("Trace length (µm):", self._feed_end_trace_length_um)
-        form_b.addRow("Trace angle (deg):", self._feed_end_trace_angle_deg)
-
-        hint = QLabel("Set angle to steer the trace away from stitching vias.")
-        hint.setWordWrap(True)
+        port_specs = [
+            (1, "Port 1 (Input)", 180.0),
+            (2, "Port 2 (Output)", 0.0),
+            (3, "Port 3 (Output)", 0.0),
+            (4, "Port 4 (Output)", 0.0),
+        ]
 
         vbox = QVBoxLayout(w)
-        vbox.addWidget(grp_a)
-        vbox.addWidget(grp_b)
+        for port_idx, title, angle_default in port_specs:
+            grp = QGroupBox(f"{title} Feed")
+            form = QFormLayout(grp)
+
+            feed_type = QComboBox()
+            feed_type.addItems(["Coaxial", "Trace"])
+            feed_type.setCurrentIndex(1)
+            trace_w_um = self._mk_dspin(25.0, 10000.0, 250.0, " µm")
+            trace_l_um = self._mk_dspin(50.0, 50000.0, 2000.0, " µm")
+            trace_ang_deg = self._mk_dspin(-180.0, 180.0, angle_default, "°", decimals=1)
+
+            form.addRow("Feed type:", feed_type)
+            form.addRow("Trace width (µm):", trace_w_um)
+            form.addRow("Trace length (µm):", trace_l_um)
+            form.addRow("Trace angle (deg):", trace_ang_deg)
+
+            self._feed_port_groups[port_idx] = grp
+            self._feed_port_controls[port_idx] = {
+                "type": feed_type,
+                "trace_width_um": trace_w_um,
+                "trace_length_um": trace_l_um,
+                "trace_angle_deg": trace_ang_deg,
+            }
+
+            feed_type.currentIndexChanged.connect(self._feed_controls_changed)
+            trace_w_um.valueChanged.connect(self._param_changed)
+            trace_l_um.valueChanged.connect(self._param_changed)
+            trace_ang_deg.valueChanged.connect(self._param_changed)
+
+            vbox.addWidget(grp)
+
+        # Legacy aliases used by existing preview/script/state code paths.
+        self._feed_start_type = self._feed_port_controls[1]["type"]
+        self._feed_start_trace_width_um = self._feed_port_controls[1]["trace_width_um"]
+        self._feed_start_trace_length_um = self._feed_port_controls[1]["trace_length_um"]
+        self._feed_start_trace_angle_deg = self._feed_port_controls[1]["trace_angle_deg"]
+        self._feed_end_type = self._feed_port_controls[2]["type"]
+        self._feed_end_trace_width_um = self._feed_port_controls[2]["trace_width_um"]
+        self._feed_end_trace_length_um = self._feed_port_controls[2]["trace_length_um"]
+        self._feed_end_trace_angle_deg = self._feed_port_controls[2]["trace_angle_deg"]
+
+        hint = QLabel(
+            "Set angle to steer the trace away from stitching vias. "
+            "Differential mode uses port numbering: inputs 1,2 and outputs 3,4."
+        )
+        hint.setWordWrap(True)
+
         vbox.addWidget(hint)
         vbox.addStretch(1)
         self._tabs.addTab(w, "Feed")
 
-        self._feed_start_type.currentIndexChanged.connect(self._feed_controls_changed)
-        self._feed_start_trace_width_um.valueChanged.connect(self._param_changed)
-        self._feed_start_trace_length_um.valueChanged.connect(self._param_changed)
-        self._feed_start_trace_angle_deg.valueChanged.connect(self._param_changed)
-        self._feed_end_type.currentIndexChanged.connect(self._feed_controls_changed)
-        self._feed_end_trace_width_um.valueChanged.connect(self._param_changed)
-        self._feed_end_trace_length_um.valueChanged.connect(self._param_changed)
-        self._feed_end_trace_angle_deg.valueChanged.connect(self._param_changed)
-
         self._feed_controls_changed()
 
-    def _feed_controls_changed(self, *args):
-        is_start_trace = self._feed_start_type.currentText().strip().lower() == "trace"
-        self._feed_start_trace_width_um.setEnabled(is_start_trace)
-        self._feed_start_trace_length_um.setEnabled(is_start_trace)
-        self._feed_start_trace_angle_deg.setEnabled(is_start_trace)
+    def _active_feed_control_ports(self) -> list[int]:
+        if self._radio_diff.isChecked():
+            return [1, 2, 3, 4]
+        return [1, 2]
 
-        is_end_trace = self._feed_end_type.currentText().strip().lower() == "trace"
-        self._feed_end_trace_width_um.setEnabled(is_end_trace)
-        self._feed_end_trace_length_um.setEnabled(is_end_trace)
-        self._feed_end_trace_angle_deg.setEnabled(is_end_trace)
+    def _refresh_feed_group_titles(self) -> None:
+        diff_enabled = self._radio_diff.isChecked()
+        title_by_port = {
+            1: "Port 1 (Input) Feed",
+            2: "Port 2 (Input) Feed" if diff_enabled else "Port 2 (Output) Feed",
+            3: "Port 3 (Output) Feed",
+            4: "Port 4 (Output) Feed",
+        }
+        for port_idx, grp in self._feed_port_groups.items():
+            grp.setTitle(title_by_port.get(port_idx, f"Port {port_idx} Feed"))
+
+    def _feed_port_center_y_mm(self, port_idx: int) -> float:
+        if port_idx in (2, 4) and self._radio_diff.isChecked():
+            return self._diff_spacing.value() / 1000.0
+        return 0.0
+
+    def _get_feed_port_config(self, port_idx: int) -> dict[str, float | str]:
+        controls = self._feed_port_controls.get(port_idx, self._feed_port_controls[1])
+        return {
+            "type": controls["type"].currentText(),
+            "trace_width_um": controls["trace_width_um"].value(),
+            "trace_length_um": controls["trace_length_um"].value(),
+            "trace_angle_deg": controls["trace_angle_deg"].value(),
+        }
+
+    def _set_feed_port_config(self, port_idx: int, cfg: dict) -> None:
+        controls = self._feed_port_controls.get(port_idx)
+        if controls is None:
+            return
+        feed_type_idx = controls["type"].findText(str(cfg.get("type", "Trace")))
+        if feed_type_idx >= 0:
+            controls["type"].setCurrentIndex(feed_type_idx)
+        controls["trace_width_um"].setValue(float(cfg.get("trace_width_um", 250.0)))
+        controls["trace_length_um"].setValue(float(cfg.get("trace_length_um", 2000.0)))
+        controls["trace_angle_deg"].setValue(float(cfg.get("trace_angle_deg", 0.0)))
+
+    def _feed_controls_changed(self, *args):
+        diff_enabled = self._radio_diff.isChecked()
+        self._refresh_feed_group_titles()
+        for port_idx, controls in self._feed_port_controls.items():
+            port_enabled = diff_enabled or (port_idx in (1, 2))
+            group = self._feed_port_groups.get(port_idx)
+            if group is not None:
+                group.setVisible(diff_enabled or (port_idx in (1, 2)))
+                group.setEnabled(port_enabled)
+
+            is_trace = controls["type"].currentText().strip().lower() == "trace"
+            controls["trace_width_um"].setEnabled(port_enabled and is_trace)
+            controls["trace_length_um"].setEnabled(port_enabled and is_trace)
+            controls["trace_angle_deg"].setEnabled(port_enabled and is_trace)
         self._param_changed()
 
     # ── Tab 4 – Simulation ────────────────────────────────────────────────
@@ -952,33 +983,118 @@ class ViaWindow(QMainWindow):
     def _build_tab_simulation(self):
         w = QWidget()
         grp = QGroupBox("Simulation Parameters")
+        fit_grp = QGroupBox("S-Parameter Fitting")
         from PySide6.QtWidgets import QFormLayout
         form = QFormLayout(grp)
+        fit_form = QFormLayout(fit_grp)
 
         self._f_start  = self._mk_dspin(0.001, 100.0,  0.01, " GHz", decimals=3)
         self._f_stop   = self._mk_dspin(0.01,  200.0, 10.0,  " GHz", decimals=2)
         self._n_pts    = QSpinBox(); self._n_pts.setRange(3, 10001); self._n_pts.setValue(11)
-        self._res_mm   = self._mk_dspin(0.01, 2.0, 0.25, "", decimals=2)
         self._n_workers = QSpinBox(); self._n_workers.setRange(1, 32); self._n_workers.setValue(4)
+        self._sparam_fit_enable = QCheckBox("Enable fitting to arbitrary points")
+        self._sparam_fit_enable.setChecked(False)
+        self._sparam_fit_n_pts = QSpinBox(); self._sparam_fit_n_pts.setRange(3, 50001); self._sparam_fit_n_pts.setValue(401)
+        self._sparam_fit_n_pts.setEnabled(False)
 
         form.addRow("F start (GHz):", self._f_start)
         form.addRow("F stop (GHz):",  self._f_stop)
         form.addRow("N points:",      self._n_pts)
-        form.addRow("Mesh resolution (fraction of lambda max):", self._res_mm)
         form.addRow("N workers:",     self._n_workers)
+
+        fit_form.addRow(self._sparam_fit_enable)
+        fit_form.addRow("Fitted points:", self._sparam_fit_n_pts)
 
         vbox = QVBoxLayout(w)
         vbox.addWidget(grp)
+        vbox.addWidget(fit_grp)
         vbox.addStretch(1)
         self._tabs.addTab(w, "Simulation")
 
         self._f_start.valueChanged.connect(self._param_changed)
         self._f_stop.valueChanged.connect(self._param_changed)
         self._n_pts.valueChanged.connect(self._param_changed)
-        self._res_mm.valueChanged.connect(self._param_changed)
         self._n_workers.valueChanged.connect(self._param_changed)
+        self._sparam_fit_enable.toggled.connect(self._simulation_controls_changed)
+        self._sparam_fit_n_pts.valueChanged.connect(self._param_changed)
 
-    # ── Tab 5 – Script ────────────────────────────────────────────────────
+    # ── Tab 5 – Mesh ─────────────────────────────────────────────────────
+
+    def _build_tab_mesh(self):
+        w = QWidget()
+        from PySide6.QtWidgets import QFormLayout
+
+        global_grp = QGroupBox("Global Mesh")
+        global_form = QFormLayout(global_grp)
+        self._res_mm = self._mk_dspin(0.01, 2.0, 0.25, "", decimals=2)
+        global_form.addRow("Mesh resolution (fraction of lambda max):", self._res_mm)
+
+        local_grp = QGroupBox("Local Mesh Subdivision")
+        local_form = QFormLayout(local_grp)
+        self._mesh_local_enable = QCheckBox("Enable local subdivision factors")
+        self._mesh_local_enable.setChecked(False)
+        local_form.addRow(self._mesh_local_enable)
+
+        self._mesh_factor_sliders: dict[str, QSlider] = {}
+        self._mesh_factor_labels: dict[str, QLabel] = {}
+        mesh_specs = [
+            ("via", "Via"),
+            ("ports", "Ports"),
+            ("feed", "Feed"),
+            ("planes", "Planes"),
+            ("stitching", "Stitching"),
+        ]
+        for mesh_key, mesh_label in mesh_specs:
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            slider = QSlider(Qt.Horizontal)
+            slider.setRange(1, 16)
+            slider.setSingleStep(1)
+            slider.setPageStep(1)
+            slider.setValue(1)
+            slider.setTickInterval(1)
+            slider.setTickPosition(QSlider.TicksBelow)
+            value_lbl = QLabel("x1")
+            value_lbl.setMinimumWidth(32)
+            row_layout.addWidget(slider, 1)
+            row_layout.addWidget(value_lbl)
+            local_form.addRow(f"{mesh_label} factor:", row_widget)
+            self._mesh_factor_sliders[mesh_key] = slider
+            self._mesh_factor_labels[mesh_key] = value_lbl
+            slider.valueChanged.connect(self._mesh_controls_changed)
+
+        hint = QLabel(
+            "Higher factor means finer local mesh. Effective local target is Mesh Resolution / Factor."
+        )
+        hint.setWordWrap(True)
+
+        vbox = QVBoxLayout(w)
+        vbox.addWidget(global_grp)
+        vbox.addWidget(local_grp)
+        vbox.addWidget(hint)
+        vbox.addStretch(1)
+        self._tabs.addTab(w, "Mesh")
+
+        self._res_mm.valueChanged.connect(self._param_changed)
+        self._mesh_local_enable.toggled.connect(self._mesh_controls_changed)
+        self._mesh_controls_changed()
+
+    def _simulation_controls_changed(self, *args):
+        self._sparam_fit_n_pts.setEnabled(self._sparam_fit_enable.isChecked())
+        self._param_changed()
+
+    def _mesh_controls_changed(self, *args):
+        enabled = self._mesh_local_enable.isChecked()
+        for mesh_key, slider in self._mesh_factor_sliders.items():
+            slider.setEnabled(enabled)
+            value = slider.value()
+            if mesh_key in self._mesh_factor_labels:
+                self._mesh_factor_labels[mesh_key].setText(f"x{value}")
+                self._mesh_factor_labels[mesh_key].setEnabled(enabled)
+        self._param_changed()
+
+    # ── Tab 6 – Script ────────────────────────────────────────────────────
 
     def _build_tab_script(self):
         w = QWidget()
@@ -1188,14 +1304,15 @@ class ViaWindow(QMainWindow):
             diff_mm = self._diff_spacing.value() / 1000.0
             outer_r = max(outer_r, abs(diff_mm) + pad_r_mm)
 
-        if hasattr(self, "_feed_start_type") and self._feed_start_type.currentText().strip().lower() == "trace":
-            feed_len_mm = self._feed_start_trace_length_um.value() / 1000.0
-            feed_w_mm = self._feed_start_trace_width_um.value() / 1000.0
-            outer_r = max(outer_r, feed_len_mm + 0.5 * feed_w_mm + pad_r_mm)
-        if hasattr(self, "_feed_end_type") and self._feed_end_type.currentText().strip().lower() == "trace":
-            feed_len_mm = self._feed_end_trace_length_um.value() / 1000.0
-            feed_w_mm = self._feed_end_trace_width_um.value() / 1000.0
-            outer_r = max(outer_r, feed_len_mm + 0.5 * feed_w_mm + pad_r_mm)
+        if hasattr(self, "_feed_port_controls"):
+            for port_idx in self._active_feed_control_ports():
+                cfg = self._get_feed_port_config(port_idx)
+                if str(cfg.get("type", "trace")).strip().lower() != "trace":
+                    continue
+                feed_len_mm = float(cfg.get("trace_length_um", 2000.0)) / 1000.0
+                feed_w_mm = float(cfg.get("trace_width_um", 250.0)) / 1000.0
+                y_off_mm = abs(self._feed_port_center_y_mm(port_idx))
+                outer_r = max(outer_r, y_off_mm + feed_len_mm + 0.5 * feed_w_mm + pad_r_mm)
 
         stitching_enabled = self._stitch_enable.isChecked()
         if stitching_enabled:
@@ -1447,13 +1564,7 @@ class ViaWindow(QMainWindow):
                 stub_stack_idx = None
 
         def _layer_antipad_radius_mm(layer_index: int, min_radius_mm: float) -> float:
-            row = stackup[layer_index]
-            raw_antipad_um = row.get("antipad_um", None)
-            if raw_antipad_um is not None:
-                try:
-                    return max(float(raw_antipad_um) / 2000.0, min_radius_mm)
-                except (TypeError, ValueError):
-                    pass
+            # Via Geometry antipad is the only source of truth for 3D antipad holes.
             return max(apad_r, min_radius_mm)
 
         plane_holes_by_layer: dict[int, list[tuple[float, float, float]]] = {}
@@ -1566,58 +1677,50 @@ class ViaWindow(QMainWindow):
             _add_via(0.0, diff_offset_mm, via_z_top, via_z_bot, drill_r, pad_r, apad_r, signal_landing_layers,
                      scene_key="via/diff", scene_label="Differential Via")
 
-        # Feed geometry preview on both via landing layers.
+        # Feed geometry preview on via landing layers.
+        # Differential mode shows all 4 feeds (1,2 inputs and 3,4 outputs).
         coax_h = max(0.4, 0.35 * (layer_z1[-1] - layer_z0[0]))
-        if hasattr(self, "_feed_start_type"):
-            start_kind = self._feed_start_type.currentText().strip().lower()
-            if start_kind == "trace":
-                feed_len = self._feed_start_trace_length_um.value() / 1000.0
-                feed_w = self._feed_start_trace_width_um.value() / 1000.0
-                feed_ang = self._feed_start_trace_angle_deg.value()
-                z0 = layer_z0[from_stack_idx]
-                z1 = layer_z1[from_stack_idx]
-                # Start the trace inside the pad so rectangle corners do not stick out.
-                corner_contact = math.sqrt(max(pad_r * pad_r - (0.5 * feed_w) * (0.5 * feed_w), 0.0))
-                start_offset = max(0.0, corner_contact - 0.01 * feed_w)
-                layer_col = self._layer_color(from_stack_idx, True)
-                feed_color = (layer_col[0], min(1.0, layer_col[1] + 0.08), 0.05, 0.95)
-                tv, tf = _trace_box_mesh(feed_len, feed_w, z0, z1, feed_ang, start_offset=start_offset)
-                tmesh = gl.GLMeshItem(vertexes=tv, faces=tf,
-                                      color=feed_color, smooth=False, drawEdges=False)
-                tmesh.setGLOptions("opaque")
-                self._register_scene_mesh("Feeds", "feed/start", "Start Feed", tmesh)
-            else:
-                z_coax = layer_z1[from_stack_idx]
-                cv, cf = _cyl_mesh(max(drill_r * 0.65, 0.03), coax_h, z_coax)
-                cmesh = gl.GLMeshItem(vertexes=cv, faces=cf,
-                                      color=(0.92, 0.92, 0.92, 0.95), smooth=True, drawEdges=True)
-                cmesh.setGLOptions("opaque")
-                self._register_scene_mesh("Feeds", "feed/start", "Start Feed", cmesh)
+        is_diff_mode = self._radio_diff.isChecked()
+        input_ports = [1, 2] if is_diff_mode else [1]
+        output_ports = [3, 4] if is_diff_mode else [2]
 
-        if hasattr(self, "_feed_end_type"):
-            end_kind = self._feed_end_type.currentText().strip().lower()
-            if end_kind == "trace":
-                feed_len = self._feed_end_trace_length_um.value() / 1000.0
-                feed_w = self._feed_end_trace_width_um.value() / 1000.0
-                feed_ang = self._feed_end_trace_angle_deg.value()
-                z0 = layer_z0[to_stack_idx]
-                z1 = layer_z1[to_stack_idx]
+        def _add_feed_preview(port_idx: int, layer_idx: int, prefix: str, color_seed: tuple[float, float, float, float]):
+            if not hasattr(self, "_feed_port_controls"):
+                return
+            cfg = self._get_feed_port_config(port_idx)
+            kind = str(cfg.get("type", "Trace")).strip().lower()
+            y_off = self._feed_port_center_y_mm(port_idx)
+            z0 = layer_z0[layer_idx]
+            z1 = layer_z1[layer_idx]
+
+            if kind == "trace":
+                feed_len = float(cfg.get("trace_length_um", 2000.0)) / 1000.0
+                feed_w = float(cfg.get("trace_width_um", 250.0)) / 1000.0
+                feed_ang = float(cfg.get("trace_angle_deg", 0.0))
                 corner_contact = math.sqrt(max(pad_r * pad_r - (0.5 * feed_w) * (0.5 * feed_w), 0.0))
                 start_offset = max(0.0, corner_contact - 0.01 * feed_w)
-                layer_col = self._layer_color(to_stack_idx, True)
-                feed_color = (layer_col[0], min(1.0, layer_col[1] + 0.08), 0.05, 0.95)
                 tv, tf = _trace_box_mesh(feed_len, feed_w, z0, z1, feed_ang, start_offset=start_offset)
+                tv[:, 1] += y_off
+                feed_color = (color_seed[0], min(1.0, color_seed[1] + 0.08), 0.05, 0.95)
                 tmesh = gl.GLMeshItem(vertexes=tv, faces=tf,
                                       color=feed_color, smooth=False, drawEdges=False)
                 tmesh.setGLOptions("opaque")
-                self._register_scene_mesh("Feeds", "feed/end", "End Feed", tmesh)
+                self._register_scene_mesh("Feeds", f"feed/{prefix}_{port_idx}", f"Port {port_idx} Feed", tmesh)
             else:
-                z_coax = layer_z1[to_stack_idx]
+                z_coax = layer_z1[layer_idx]
                 cv, cf = _cyl_mesh(max(drill_r * 0.65, 0.03), coax_h, z_coax)
+                cv[:, 1] += y_off
                 cmesh = gl.GLMeshItem(vertexes=cv, faces=cf,
-                                      color=(0.82, 0.82, 0.86, 0.95), smooth=True, drawEdges=True)
+                                      color=(0.90, 0.90, 0.92, 0.95), smooth=True, drawEdges=True)
                 cmesh.setGLOptions("opaque")
-                self._register_scene_mesh("Feeds", "feed/end", "End Feed", cmesh)
+                self._register_scene_mesh("Feeds", f"feed/{prefix}_{port_idx}", f"Port {port_idx} Feed", cmesh)
+
+        input_layer_col = self._layer_color(from_stack_idx, True)
+        output_layer_col = self._layer_color(to_stack_idx, True)
+        for pidx in input_ports:
+            _add_feed_preview(pidx, from_stack_idx, "in", input_layer_col)
+        for pidx in output_ports:
+            _add_feed_preview(pidx, to_stack_idx, "out", output_layer_col)
 
         # Stitching vias
         if self._stitch_enable.isChecked():
@@ -1790,17 +1893,104 @@ class ViaWindow(QMainWindow):
         n_pts     = self._n_pts.value()
         mesh_resolution = self._res_mm.value()
         n_workers = self._n_workers.value()
+        sparam_fit_enabled = self._sparam_fit_enable.isChecked() if hasattr(self, "_sparam_fit_enable") else False
+        sparam_fit_n_pts = self._sparam_fit_n_pts.value() if hasattr(self, "_sparam_fit_n_pts") else 401
+        mesh_local_enabled = self._mesh_local_enable.isChecked() if hasattr(self, "_mesh_local_enable") else False
+        mesh_div_via = self._mesh_factor_sliders["via"].value() if hasattr(self, "_mesh_factor_sliders") else 1
+        mesh_div_ports = self._mesh_factor_sliders["ports"].value() if hasattr(self, "_mesh_factor_sliders") else 1
+        mesh_div_feed = self._mesh_factor_sliders["feed"].value() if hasattr(self, "_mesh_factor_sliders") else 1
+        mesh_div_planes = self._mesh_factor_sliders["planes"].value() if hasattr(self, "_mesh_factor_sliders") else 1
+        mesh_div_stitching = self._mesh_factor_sliders["stitching"].value() if hasattr(self, "_mesh_factor_sliders") else 1
         show_structure_in_emerge = self._show_structure_in_emerge.isChecked() if hasattr(self, "_show_structure_in_emerge") else True
         show_labels_in_emerge = self._show_labels_in_emerge.isChecked() if hasattr(self, "_show_labels_in_emerge") else False
         show_mesh_in_emerge = self._show_mesh_in_emerge.isChecked() if hasattr(self, "_show_mesh_in_emerge") else True
-        start_feed_kind = self._feed_start_type.currentText().strip().lower() if hasattr(self, "_feed_start_type") else "trace"
-        start_feed_trace_width_mm = self._feed_start_trace_width_um.value() / 1000.0 if hasattr(self, "_feed_start_trace_width_um") else 0.25
-        start_feed_trace_length_mm = self._feed_start_trace_length_um.value() / 1000.0 if hasattr(self, "_feed_start_trace_length_um") else 2.0
-        start_feed_trace_angle_deg = self._feed_start_trace_angle_deg.value() if hasattr(self, "_feed_start_trace_angle_deg") else 180.0
-        end_feed_kind = self._feed_end_type.currentText().strip().lower() if hasattr(self, "_feed_end_type") else "trace"
-        end_feed_trace_width_mm = self._feed_end_trace_width_um.value() / 1000.0 if hasattr(self, "_feed_end_trace_width_um") else 0.25
-        end_feed_trace_length_mm = self._feed_end_trace_length_um.value() / 1000.0 if hasattr(self, "_feed_end_trace_length_um") else 2.0
-        end_feed_trace_angle_deg = self._feed_end_trace_angle_deg.value() if hasattr(self, "_feed_end_trace_angle_deg") else 0.0
+        is_diff_mode = self._radio_diff.isChecked()
+        active_script_ports = [1, 2, 3, 4] if is_diff_mode else [1, 2]
+        input_control_ports = [1, 2] if is_diff_mode else [1]
+        output_control_ports = [3, 4] if is_diff_mode else [2]
+        control_to_script_port = {1: 1, 2: 2, 3: 3, 4: 4} if is_diff_mode else {1: 1, 2: 2}
+
+        default_feed_cfg = {
+            "type": "Trace",
+            "trace_width_um": 250.0,
+            "trace_length_um": 2000.0,
+            "trace_angle_deg": 0.0,
+        }
+
+        feed_cfg_by_control: dict[int, dict[str, float | str]] = {}
+        for ctrl_port in (1, 2, 3, 4):
+            if hasattr(self, "_feed_port_controls"):
+                feed_cfg_by_control[ctrl_port] = self._get_feed_port_config(ctrl_port)
+            elif ctrl_port in (1, 2):
+                feed_cfg_by_control[ctrl_port] = {
+                    "type": self._feed_start_type.currentText() if hasattr(self, "_feed_start_type") else "Trace",
+                    "trace_width_um": self._feed_start_trace_width_um.value() if hasattr(self, "_feed_start_trace_width_um") else 250.0,
+                    "trace_length_um": self._feed_start_trace_length_um.value() if hasattr(self, "_feed_start_trace_length_um") else 2000.0,
+                    "trace_angle_deg": self._feed_start_trace_angle_deg.value() if hasattr(self, "_feed_start_trace_angle_deg") else 180.0,
+                }
+            else:
+                feed_cfg_by_control[ctrl_port] = {
+                    "type": self._feed_end_type.currentText() if hasattr(self, "_feed_end_type") else "Trace",
+                    "trace_width_um": self._feed_end_trace_width_um.value() if hasattr(self, "_feed_end_trace_width_um") else 250.0,
+                    "trace_length_um": self._feed_end_trace_length_um.value() if hasattr(self, "_feed_end_trace_length_um") else 2000.0,
+                    "trace_angle_deg": self._feed_end_trace_angle_deg.value() if hasattr(self, "_feed_end_trace_angle_deg") else 0.0,
+                }
+
+        for ctrl_port in (1, 2, 3, 4):
+            cfg = dict(default_feed_cfg)
+            cfg.update(feed_cfg_by_control.get(ctrl_port, {}))
+            if not is_diff_mode and ctrl_port in (3, 4):
+                cfg = dict(feed_cfg_by_control[2])
+            feed_cfg_by_control[ctrl_port] = cfg
+
+        def _resolve_port_feed_geometry(cfg: dict[str, float | str], default_angle_deg: float) -> dict[str, float | str]:
+            kind = str(cfg.get("type", "Trace")).strip().lower()
+            if kind == "trace":
+                w_mm = max(float(cfg.get("trace_width_um", 250.0)) / 1000.0, 0.001)
+                l_mm = max(float(cfg.get("trace_length_um", 2000.0)) / 1000.0, 0.001)
+            else:
+                w_mm = 0.0  # filled later once drill radius is known
+                l_mm = 0.0
+            angle_deg = float(cfg.get("trace_angle_deg", default_angle_deg))
+            return {
+                "kind": kind,
+                "width_mm": w_mm,
+                "length_mm": l_mm,
+                "angle_deg": angle_deg,
+            }
+
+        entry_feed_by_control = {
+            ctrl_port: _resolve_port_feed_geometry(feed_cfg_by_control[ctrl_port], 180.0)
+            for ctrl_port in input_control_ports
+        }
+        exit_feed_by_control = {
+            ctrl_port: _resolve_port_feed_geometry(feed_cfg_by_control[ctrl_port], 0.0)
+            for ctrl_port in output_control_ports
+        }
+
+        def _make_port_sheet_geometry(feed_geom: dict[str, float | str], center_y_mm: float, contact_offset_mm: float) -> dict[str, float]:
+            w_mm = float(feed_geom["width_mm"])
+            l_mm = float(feed_geom["length_mm"])
+            angle_deg = float(feed_geom["angle_deg"])
+            kind = str(feed_geom["kind"])
+            a = _math.radians(angle_deg)
+            c, s = _math.cos(a), _math.sin(a)
+            wx, wy = -s, c
+            if kind == "trace":
+                ox = (contact_offset_mm + l_mm) * c - (w_mm / 2.0) * wx
+                oy = center_y_mm + (contact_offset_mm + l_mm) * s - (w_mm / 2.0) * wy
+                ux, uy = w_mm * wx, w_mm * wy
+            else:
+                ox = -0.5 * w_mm
+                oy = center_y_mm
+                ux, uy = w_mm, 0.0
+            return {
+                "ox": ox,
+                "oy": oy,
+                "ux": ux,
+                "uy": uy,
+            }
+
         _, boundary_pad_mm, _, _ = self._simulation_domain_geometry()
 
         # ── Copper layer index mapping ────────────────────────────────────────
@@ -1884,100 +2074,93 @@ class ViaWindow(QMainWindow):
         plane_antipad_r_mm_by_gi: dict[int, float] = {}
         for gi, row in enumerate(stackup):
             if row.get("is_copper") and str(row.get("role", "Signal")) == "Plane":
-                raw_ap_um = row.get("antipad_um", None)
-                try:
-                    ap_um = float(raw_ap_um) if raw_ap_um is not None else antipad_um
-                except (TypeError, ValueError):
-                    ap_um = antipad_um
-                plane_antipad_r_mm_by_gi[gi] = max(ap_um / 2000.0, drill_r_mm)
+                plane_antipad_r_mm_by_gi[gi] = max(antipad_r_mm, drill_r_mm)
 
         z_entry_top_mm, z_entry_bot_mm = via_from[3], via_from[4]
         z_exit_top_mm,  z_exit_bot_mm  = via_to[3],   via_to[4]
         thick_entry_mm = z_entry_top_mm - z_entry_bot_mm
         thick_exit_mm  = z_exit_top_mm  - z_exit_bot_mm
 
-        # Feed trace geometry (mm)
-        if start_feed_kind == "trace":
-            start_w_mm   = max(start_feed_trace_width_mm, 0.001)
-            start_len_mm = max(start_feed_trace_length_mm, 0.001)
-        else:
-            start_w_mm   = drill_r_mm * 2.0
-            start_len_mm = max(drill_r_mm * 2.0, 0.05)
-        start_contact_offset_mm = max(
-            0.0,
-            _math.sqrt(max(pad_r_mm * pad_r_mm - (0.5 * start_w_mm) * (0.5 * start_w_mm), 0.0))
-            - 0.01 * start_w_mm,
-        )
-        start_angle_deg = start_feed_trace_angle_deg
+        # Feed trace geometry (mm) and per-port sheet definitions
+        for feed_geom in entry_feed_by_control.values():
+            if str(feed_geom["kind"]) != "trace":
+                feed_geom["width_mm"] = drill_r_mm * 2.0
+                feed_geom["length_mm"] = max(drill_r_mm * 2.0, 0.05)
+            w_mm = float(feed_geom["width_mm"])
+            feed_geom["contact_offset_mm"] = max(
+                0.0,
+                _math.sqrt(max(pad_r_mm * pad_r_mm - (0.5 * w_mm) * (0.5 * w_mm), 0.0)) - 0.01 * w_mm,
+            )
+        for feed_geom in exit_feed_by_control.values():
+            if str(feed_geom["kind"]) != "trace":
+                feed_geom["width_mm"] = drill_r_mm * 2.0
+                feed_geom["length_mm"] = max(drill_r_mm * 2.0, 0.05)
+            w_mm = float(feed_geom["width_mm"])
+            feed_geom["contact_offset_mm"] = max(
+                0.0,
+                _math.sqrt(max(pad_r_mm * pad_r_mm - (0.5 * w_mm) * (0.5 * w_mm), 0.0)) - 0.01 * w_mm,
+            )
 
-        if end_feed_kind == "trace":
-            end_w_mm   = max(end_feed_trace_width_mm, 0.001)
-            end_len_mm = max(end_feed_trace_length_mm, 0.001)
-        else:
-            end_w_mm   = drill_r_mm * 2.0
-            end_len_mm = max(drill_r_mm * 2.0, 0.05)
-        end_contact_offset_mm = max(
-            0.0,
-            _math.sqrt(max(pad_r_mm * pad_r_mm - (0.5 * end_w_mm) * (0.5 * end_w_mm), 0.0))
-            - 0.01 * end_w_mm,
-        )
-        end_angle_deg = end_feed_trace_angle_deg
+        max_trace_reach_mm = 0.0
+        for ctrl_port, feed_geom in {**entry_feed_by_control, **exit_feed_by_control}.items():
+            y_off_mm = abs(self._feed_port_center_y_mm(ctrl_port))
+            max_trace_reach_mm = max(
+                max_trace_reach_mm,
+                y_off_mm + float(feed_geom["length_mm"]) + 0.5 * float(feed_geom["width_mm"]),
+            )
 
         # Domain half-width (mm) — must contain traces + margin
-        domain_hw_mm = max(
-            boundary_pad_mm,
-            max(start_len_mm, end_len_mm) + pad_r_mm + 0.5
-        )
+        domain_hw_mm = max(boundary_pad_mm, max_trace_reach_mm + pad_r_mm + 0.5)
 
         # ── Port geometry ─────────────────────────────────────────────────────
-        # Port 1 (entry trace end): spans from nearest reference below entry
+        # Input ports (1,2): entry layer, nearest reference below entry
         entry_ci = via_from[0]
         if entry_ci + 1 < len(copper_info):
-            port1_z_ref_mm = copper_info[entry_ci + 1][3]  # z_top of layer below
+            entry_port_z_ref_mm = copper_info[entry_ci + 1][3]  # z_top of layer below
         else:
-            port1_z_ref_mm = z_entry_bot_mm
-        port1_h_mm = max(z_entry_top_mm - port1_z_ref_mm, thick_entry_mm)
+            entry_port_z_ref_mm = z_entry_bot_mm
+        entry_port_h_mm = max(z_entry_top_mm - entry_port_z_ref_mm, thick_entry_mm)
+        entry_port_oz_mm = entry_port_z_ref_mm if entry_port_z_ref_mm < z_entry_top_mm else z_entry_bot_mm
 
-        # Port 2 (exit trace end): spans from exit trace bottom up to nearest ref above
+        # Output ports (3,4): exit layer, nearest reference above exit
         exit_ci = via_to[0]
         if exit_ci > 0:
-            port2_z_ref_mm = copper_info[exit_ci - 1][4]   # z_bot of layer above
+            exit_port_z_ref_mm = copper_info[exit_ci - 1][4]   # z_bot of layer above
         else:
-            port2_z_ref_mm = z_exit_top_mm
-        port2_h_mm = max(port2_z_ref_mm - z_exit_bot_mm, thick_exit_mm)
+            exit_port_z_ref_mm = z_exit_top_mm
+        exit_port_h_mm = max(exit_port_z_ref_mm - z_exit_bot_mm, thick_exit_mm)
+        exit_port_oz_mm = z_exit_bot_mm
 
-        # Port plate corner coordinates (world space, in mm)
-        # Trace box goes from origin (0,0) in direction angle_deg for length L
-        # After rotate-by-angle: far end = (L*cos(a), L*sin(a))
-        # Perpendicular (width) direction = (-sin(a), cos(a))
-        a1 = _math.radians(start_angle_deg)
-        c1, s1 = _math.cos(a1), _math.sin(a1)
-        wx1, wy1 = -s1, c1
-        # Port 1 plate origin: far end of trace, offset -w/2 in perp direction, at z_ref
-        if start_feed_kind == "trace":
-            p1_ox = (start_contact_offset_mm + start_len_mm) * c1 - (start_w_mm / 2.0) * wx1
-            p1_oy = (start_contact_offset_mm + start_len_mm) * s1 - (start_w_mm / 2.0) * wy1
-            p1_ux, p1_uy = start_w_mm * wx1, start_w_mm * wy1
-        else:
-            p1_ox = -0.5 * start_w_mm
-            p1_oy = 0.0
-            p1_ux, p1_uy = start_w_mm, 0.0
-        p1_oz = port1_z_ref_mm if port1_z_ref_mm < z_entry_top_mm else z_entry_bot_mm
-        p1_vz = port1_h_mm
+        port_plate_by_script: dict[int, dict[str, float]] = {}
+        port_width_by_script: dict[int, float] = {}
+        port_height_by_script: dict[int, float] = {}
+        for ctrl_port in input_control_ports:
+            script_port = control_to_script_port[ctrl_port]
+            feed_geom = entry_feed_by_control[ctrl_port]
+            port_plate = _make_port_sheet_geometry(
+                feed_geom,
+                self._feed_port_center_y_mm(ctrl_port),
+                float(feed_geom["contact_offset_mm"]),
+            )
+            port_plate["oz"] = entry_port_oz_mm
+            port_plate["vz"] = entry_port_h_mm
+            port_plate_by_script[script_port] = port_plate
+            port_width_by_script[script_port] = float(feed_geom["width_mm"])
+            port_height_by_script[script_port] = entry_port_h_mm
 
-        a2 = _math.radians(end_angle_deg)
-        c2, s2 = _math.cos(a2), _math.sin(a2)
-        wx2, wy2 = -s2, c2
-        if end_feed_kind == "trace":
-            p2_ox = (end_contact_offset_mm + end_len_mm) * c2 - (end_w_mm / 2.0) * wx2
-            p2_oy = (end_contact_offset_mm + end_len_mm) * s2 - (end_w_mm / 2.0) * wy2
-            p2_ux, p2_uy = end_w_mm * wx2, end_w_mm * wy2
-        else:
-            p2_ox = -0.5 * end_w_mm
-            p2_oy = 0.0
-            p2_ux, p2_uy = end_w_mm, 0.0
-        p2_oz = z_exit_bot_mm
-        p2_vz = port2_h_mm
+        for ctrl_port in output_control_ports:
+            script_port = control_to_script_port[ctrl_port]
+            feed_geom = exit_feed_by_control[ctrl_port]
+            port_plate = _make_port_sheet_geometry(
+                feed_geom,
+                self._feed_port_center_y_mm(ctrl_port),
+                float(feed_geom["contact_offset_mm"]),
+            )
+            port_plate["oz"] = exit_port_oz_mm
+            port_plate["vz"] = exit_port_h_mm
+            port_plate_by_script[script_port] = port_plate
+            port_width_by_script[script_port] = float(feed_geom["width_mm"])
+            port_height_by_script[script_port] = exit_port_h_mm
 
         # ── Emit generated script ─────────────────────────────────────────────
         lines: list[str] = []
@@ -2127,57 +2310,88 @@ class ViaWindow(QMainWindow):
                 lines.append("for _vx, _vy in signal_via_centers_mm:")
                 lines.append(f"    _diel_via_holes.append((_vx*mm, (_vy + {diff_offset_mm:.6f})*mm, drill_r, {z_stub_bot_mm:.6f}*mm, {z_stub_top_mm:.6f}*mm))")
         lines.append("")
-        lines.append("# ── Entry feed geometry ──────────────────────────────────────────────────")
-        lines.append(f"# Layer: {via_from[2]['name']},  type={start_feed_kind}, angle={start_angle_deg:.1f}°")
-        if start_feed_kind == "trace":
-            lines.append(f"trace_start = em.geo.Box({start_len_mm:.6f}*mm, {start_w_mm:.6f}*mm, {thick_entry_mm:.6f}*mm,")
-            lines.append(f"    position=({start_contact_offset_mm:.6f}*mm, {-start_w_mm / 2.0:.6f}*mm, {z_entry_bot_mm:.6f}*mm),")
-            lines.append(f"    alignment=em.geo.Alignment.CORNER,")
-            lines.append(f"    name=\"trace_start\")")
-            lines.append(f"trace_start.material = em.lib.PEC")
-            if abs(start_angle_deg % 360) > 0.1:
-                lines.append(f"trace_start = em.geo.rotate(trace_start, c0=(0, 0, 0),")
-                lines.append(f"    ax=(0, 0, 1), angle={start_angle_deg:.4f})")
-        else:
-            coax_r_start_mm = max(drill_r_mm * 0.65, 0.03)
-            coax_h_start_mm = max(0.4, 0.35 * (layer_z_mm[-1][0] - layer_z_mm[0][1]))
-            lines.append(f"trace_start = em.geo.Cylinder({coax_r_start_mm:.6f}*mm, {coax_h_start_mm:.6f}*mm,")
-            lines.append(f"    cs=em.GCS.displace(0, 0, {z_entry_top_mm:.6f}*mm),")
-            lines.append(f"    name=\"trace_start\")")
-            lines.append("trace_start.material = em.lib.PEC")
-        lines.append(f"# Landing pads on entry signal layer — united with trace_start")
-        lines.append(f"for _vx, _vy in signal_via_centers_mm:")
-        lines.append(f"    _pad = em.geo.Cylinder(pad_r, {thick_entry_mm:.6f}*mm,")
-        lines.append(f"        cs=em.GCS.displace(_vx*mm, _vy*mm, {z_entry_bot_mm:.6f}*mm),")
-        lines.append(f"        name=\"entry_pad\")")
-        lines.append(f"    _pad.material = em.lib.PEC")
-        lines.append(f"    trace_start = em.geo.add(trace_start, _pad)")
+        lines.append("# ── Entry feed geometry (inputs) ─────────────────────────────────────────")
+        lines.append(f"# Layer: {via_from[2]['name']} (ports 1,2 in differential mode)")
+        entry_script_ports = [control_to_script_port[p] for p in input_control_ports]
+        for ctrl_port in input_control_ports:
+            script_port = control_to_script_port[ctrl_port]
+            geom = entry_feed_by_control[ctrl_port]
+            y_off = self._feed_port_center_y_mm(ctrl_port)
+            feed_name = f"trace_port{script_port}"
+            lines.append(
+                f"# Port {script_port} input feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f}°, y={y_off:.6f}mm"
+            )
+            if str(geom["kind"]) == "trace":
+                lines.append(
+                    f"{feed_name} = em.geo.Box({float(geom['length_mm']):.6f}*mm, {float(geom['width_mm']):.6f}*mm, {thick_entry_mm:.6f}*mm,"
+                )
+                lines.append(
+                    f"    position=({float(geom['contact_offset_mm']):.6f}*mm, {y_off - float(geom['width_mm']) / 2.0:.6f}*mm, {z_entry_bot_mm:.6f}*mm),"
+                )
+                lines.append("    alignment=em.geo.Alignment.CORNER,")
+                lines.append(f"    name=\"{feed_name}\")")
+                lines.append(f"{feed_name}.material = em.lib.PEC")
+                if abs(float(geom["angle_deg"]) % 360) > 0.1:
+                    lines.append(f"{feed_name} = em.geo.rotate({feed_name}, c0=(0, {y_off:.6f}*mm, 0),")
+                    lines.append(f"    ax=(0, 0, 1), angle={float(geom['angle_deg']):.4f})")
+            else:
+                coax_r_start_mm = max(drill_r_mm * 0.65, 0.03)
+                coax_h_start_mm = max(0.4, 0.35 * (layer_z_mm[-1][0] - layer_z_mm[0][1]))
+                lines.append(f"{feed_name} = em.geo.Cylinder({coax_r_start_mm:.6f}*mm, {coax_h_start_mm:.6f}*mm,")
+                lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_entry_top_mm:.6f}*mm),")
+                lines.append(f"    name=\"{feed_name}\")")
+                lines.append(f"{feed_name}.material = em.lib.PEC")
+            lines.append(f"_pad_p{script_port} = em.geo.Cylinder(pad_r, {thick_entry_mm:.6f}*mm,")
+            lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_entry_bot_mm:.6f}*mm),")
+            lines.append(f"    name=\"entry_pad_p{script_port}\")")
+            lines.append(f"_pad_p{script_port}.material = em.lib.PEC")
+            lines.append(f"{feed_name} = em.geo.add({feed_name}, _pad_p{script_port})")
+
+        lines.append(f"trace_start = trace_port{entry_script_ports[0]}")
+        for script_port in entry_script_ports[1:]:
+            lines.append(f"trace_start = em.geo.add(trace_start, trace_port{script_port})")
+
         lines.append("")
-        lines.append("# ── Exit feed geometry ───────────────────────────────────────────────────")
-        lines.append(f"# Layer: {via_to[2]['name']},  type={end_feed_kind}, angle={end_angle_deg:.1f}°")
-        if end_feed_kind == "trace":
-            lines.append(f"trace_end = em.geo.Box({end_len_mm:.6f}*mm, {end_w_mm:.6f}*mm, {thick_exit_mm:.6f}*mm,")
-            lines.append(f"    position=({end_contact_offset_mm:.6f}*mm, {-end_w_mm / 2.0:.6f}*mm, {z_exit_bot_mm:.6f}*mm),")
-            lines.append(f"    alignment=em.geo.Alignment.CORNER,")
-            lines.append(f"    name=\"trace_end\")")
-            lines.append(f"trace_end.material = em.lib.PEC")
-            if abs(end_angle_deg % 360) > 0.1:
-                lines.append(f"trace_end = em.geo.rotate(trace_end, c0=(0, 0, 0),")
-                lines.append(f"    ax=(0, 0, 1), angle={end_angle_deg:.4f})")
-        else:
-            coax_r_end_mm = max(drill_r_mm * 0.65, 0.03)
-            coax_h_end_mm = max(0.4, 0.35 * (layer_z_mm[-1][0] - layer_z_mm[0][1]))
-            lines.append(f"trace_end = em.geo.Cylinder({coax_r_end_mm:.6f}*mm, {coax_h_end_mm:.6f}*mm,")
-            lines.append(f"    cs=em.GCS.displace(0, 0, {z_exit_top_mm:.6f}*mm),")
-            lines.append(f"    name=\"trace_end\")")
-            lines.append("trace_end.material = em.lib.PEC")
-        lines.append(f"# Landing pads on exit signal layer — united with trace_end")
-        lines.append(f"for _vx, _vy in signal_via_centers_mm:")
-        lines.append(f"    _pad = em.geo.Cylinder(pad_r, {thick_exit_mm:.6f}*mm,")
-        lines.append(f"        cs=em.GCS.displace(_vx*mm, _vy*mm, {z_exit_bot_mm:.6f}*mm),")
-        lines.append(f"        name=\"exit_pad\")")
-        lines.append(f"    _pad.material = em.lib.PEC")
-        lines.append(f"    trace_end = em.geo.add(trace_end, _pad)")
+        lines.append("# ── Exit feed geometry (outputs) ─────────────────────────────────────────")
+        lines.append(f"# Layer: {via_to[2]['name']} (ports 3,4 in differential mode)")
+        exit_script_ports = [control_to_script_port[p] for p in output_control_ports]
+        for ctrl_port in output_control_ports:
+            script_port = control_to_script_port[ctrl_port]
+            geom = exit_feed_by_control[ctrl_port]
+            y_off = self._feed_port_center_y_mm(ctrl_port)
+            feed_name = f"trace_port{script_port}"
+            lines.append(
+                f"# Port {script_port} output feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f}°, y={y_off:.6f}mm"
+            )
+            if str(geom["kind"]) == "trace":
+                lines.append(
+                    f"{feed_name} = em.geo.Box({float(geom['length_mm']):.6f}*mm, {float(geom['width_mm']):.6f}*mm, {thick_exit_mm:.6f}*mm,"
+                )
+                lines.append(
+                    f"    position=({float(geom['contact_offset_mm']):.6f}*mm, {y_off - float(geom['width_mm']) / 2.0:.6f}*mm, {z_exit_bot_mm:.6f}*mm),"
+                )
+                lines.append("    alignment=em.geo.Alignment.CORNER,")
+                lines.append(f"    name=\"{feed_name}\")")
+                lines.append(f"{feed_name}.material = em.lib.PEC")
+                if abs(float(geom["angle_deg"]) % 360) > 0.1:
+                    lines.append(f"{feed_name} = em.geo.rotate({feed_name}, c0=(0, {y_off:.6f}*mm, 0),")
+                    lines.append(f"    ax=(0, 0, 1), angle={float(geom['angle_deg']):.4f})")
+            else:
+                coax_r_end_mm = max(drill_r_mm * 0.65, 0.03)
+                coax_h_end_mm = max(0.4, 0.35 * (layer_z_mm[-1][0] - layer_z_mm[0][1]))
+                lines.append(f"{feed_name} = em.geo.Cylinder({coax_r_end_mm:.6f}*mm, {coax_h_end_mm:.6f}*mm,")
+                lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_exit_top_mm:.6f}*mm),")
+                lines.append(f"    name=\"{feed_name}\")")
+                lines.append(f"{feed_name}.material = em.lib.PEC")
+            lines.append(f"_pad_p{script_port} = em.geo.Cylinder(pad_r, {thick_exit_mm:.6f}*mm,")
+            lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_exit_bot_mm:.6f}*mm),")
+            lines.append(f"    name=\"exit_pad_p{script_port}\")")
+            lines.append(f"_pad_p{script_port}.material = em.lib.PEC")
+            lines.append(f"{feed_name} = em.geo.add({feed_name}, _pad_p{script_port})")
+
+        lines.append(f"trace_end = trace_port{exit_script_ports[0]}")
+        for script_port in exit_script_ports[1:]:
+            lines.append(f"trace_end = em.geo.add(trace_end, trace_port{script_port})")
         lines.append("")
         # Stitching vias
         if self._stitch_enable.isChecked():
@@ -2285,20 +2499,22 @@ class ViaWindow(QMainWindow):
         lines.append("# Port sheet = 2D Plate at the far end of each trace.")
         lines.append("# Width = trace width, Height = distance to nearest reference plane.")
         lines.append("# direction=(0,0,1) = E-field vertical (GND→signal).")
-        lines.append(f"# Port 1: far end of entry trace — height={port1_h_mm:.4f}mm")
-        lines.append(f"port1_sheet = em.geo.Plate(")
-        lines.append(f"    ({p1_ox:.6f}*mm, {p1_oy:.6f}*mm, {p1_oz:.6f}*mm),")
-        lines.append(f"    ({p1_ux:.6f}*mm, {p1_uy:.6f}*mm, 0),")
-        lines.append(f"    (0, 0, {p1_vz:.6f}*mm),")
-        lines.append(f"    name=\"port1_sheet\")")
-        lines.append(f"# Port 2: far end of exit trace — height={port2_h_mm:.4f}mm")
-        lines.append(f"port2_sheet = em.geo.Plate(")
-        lines.append(f"    ({p2_ox:.6f}*mm, {p2_oy:.6f}*mm, {p2_oz:.6f}*mm),")
-        lines.append(f"    ({p2_ux:.6f}*mm, {p2_uy:.6f}*mm, 0),")
-        lines.append(f"    (0, 0, {p2_vz:.6f}*mm),")
-        lines.append(f"    name=\"port2_sheet\")")
+        for script_port in active_script_ports:
+            plate = port_plate_by_script[script_port]
+            role_txt = "input" if script_port in (1, 2) and is_diff_mode else ("output" if script_port in (3, 4) else ("input" if script_port == 1 else "output"))
+            lines.append(
+                f"# Port {script_port} ({role_txt}): far end of feed trace — height={port_height_by_script[script_port]:.4f}mm"
+            )
+            lines.append(f"port{script_port}_sheet = em.geo.Plate(")
+            lines.append(f"    ({plate['ox']:.6f}*mm, {plate['oy']:.6f}*mm, {plate['oz']:.6f}*mm),")
+            lines.append(f"    ({plate['ux']:.6f}*mm, {plate['uy']:.6f}*mm, 0),")
+            lines.append(f"    (0, 0, {plate['vz']:.6f}*mm),")
+            lines.append(f"    name=\"port{script_port}_sheet\")")
 
         lines.append("# ── Geometry finalisation ────────────────────────────────────────────────")
+        lines.append("# Open region (1mm padding around structure)")
+        lines.append("air = em.geo.open_region(1*mm, 1*mm, 1*mm)")
+        lines.append("")
         lines.append("m.commit_geometry()")
         if show_structure_in_emerge:
             if show_labels_in_emerge:
@@ -2312,19 +2528,55 @@ class ViaWindow(QMainWindow):
         lines.append("# ── Mesh ─────────────────────────────────────────────────────────────────")
         lines.append(f"m.mw.set_resolution({mesh_resolution:.3f})  # fraction of max wavelength")
         lines.append("m.settings.safe_mode = True")
+        lines.append(f"mesh_local_enabled = {mesh_local_enabled}")
+        lines.append(f"mesh_div_via = {mesh_div_via}")
+        lines.append(f"mesh_div_ports = {mesh_div_ports}")
+        lines.append(f"mesh_div_feed = {mesh_div_feed}")
+        lines.append(f"mesh_div_planes = {mesh_div_planes}")
+        lines.append(f"mesh_div_stitching = {mesh_div_stitching}")
+        lines.append("if mesh_local_enabled:")
+        lines.append("    try:")
+        lines.append(f"        _local_base = max(1e-6, {mesh_resolution:.6f}) * mm")
+        lines.append("        _via_size = _local_base / max(mesh_div_via, 1)")
+        lines.append("        _ports_size = _local_base / max(mesh_div_ports, 1)")
+        lines.append("        _feed_size = _local_base / max(mesh_div_feed, 1)")
+        lines.append("        _plane_size = _local_base / max(mesh_div_planes, 1)")
+        lines.append("        _stitch_size = _local_base / max(mesh_div_stitching, 1)")
+        lines.append("        m.mesher.set_boundary_size(via_barrel, _via_size)")
+        if is_diff_mode:
+            lines.append("        m.mesher.set_boundary_size(via_barrel_diff, _via_size)")
+        if stub_enabled:
+            lines.append("        m.mesher.set_boundary_size(stub_barrel, _via_size)")
+            if is_diff_mode:
+                lines.append("        m.mesher.set_boundary_size(stub_barrel_diff, _via_size)")
+        lines.append("        m.mesher.set_boundary_size(trace_start, _feed_size)")
+        lines.append("        m.mesher.set_boundary_size(trace_end, _feed_size)")
+        for script_port in active_script_ports:
+            lines.append(f"        m.mesher.set_boundary_size(port{script_port}_sheet, _ports_size)")
+        for li, row in enumerate(stackup):
+            if row.get("is_copper") and str(row.get("role", "Signal")) == "Plane":
+                lines.append(f"        m.mesher.set_boundary_size(layer_{li}, _plane_size)")
+        if self._stitch_enable.isChecked():
+            lines.append("        if 'stitch_group' in locals():")
+            lines.append("            m.mesher.set_boundary_size(stitch_group, _stitch_size)")
+        lines.append("    except Exception as _mesh_err:")
+        lines.append("        print(f'Local mesh refinement skipped: {_mesh_err}')")
         lines.append("")
         lines.append("")
         lines.append("")
         lines.append("")
         lines.append("# ── Lumped ports ─────────────────────────────────────────────────────────")
-        lines.append(f"p1 = m.mw.bc.LumpedPort(port1_sheet, 1,")
-        lines.append(f"    width={start_w_mm:.6f}*mm, height={port1_h_mm:.6f}*mm,")
-        lines.append(f"    direction=(0, 0, 1))")
-        lines.append("")
-        lines.append(f"p2 = m.mw.bc.LumpedPort(port2_sheet, 2,")
-        lines.append(f"    width={end_w_mm:.6f}*mm, height={port2_h_mm:.6f}*mm,")
-        lines.append(f"    direction=(0, 0, 1))")
-        lines.append("")
+        if is_diff_mode:
+            lines.append("# Differential numbering: ports 1,2 = inputs on entry layer; ports 3,4 = outputs on exit layer.")
+        else:
+            lines.append("# Single-ended numbering: port 1 = input on entry layer; port 2 = output on exit layer.")
+        for script_port in active_script_ports:
+            lines.append(f"p{script_port} = m.mw.bc.LumpedPort(port{script_port}_sheet, {script_port},")
+            lines.append(
+                f"    width={port_width_by_script[script_port]:.6f}*mm, height={port_height_by_script[script_port]:.6f}*mm,"
+            )
+            lines.append("    direction=(0, 0, 1))")
+            lines.append("")
         lines.append("m.generate_mesh()")
         if show_mesh_in_emerge:
             lines.append("m.view(plot_mesh=True)")
@@ -2334,7 +2586,22 @@ class ViaWindow(QMainWindow):
         lines.append("m.save()")
         lines.append("")
         lines.append("ResultTimeCode = datetime.datetime.now().strftime(\"%Y%m%d-%H%M%S\")")
-        _n_ports = 4 if self._radio_diff.isChecked() else 2
+        lines.append(f"sparam_fit_enabled = {sparam_fit_enabled}")
+        lines.append(f"sparam_fit_points = {sparam_fit_n_pts}")
+        lines.append("if sparam_fit_enabled:")
+        lines.append("    try:")
+        lines.append("        _fit_freq = data.scalar.grid.dense_f(int(max(3, sparam_fit_points)))")
+        lines.append("        _fit_export = {'freq_hz': np.asarray(_fit_freq)}")
+        lines.append(f"        for _i in range(1, {len(active_script_ports) + 1}):")
+        lines.append(f"            for _j in range(1, {len(active_script_ports) + 1}):")
+        lines.append("                _fit_export[f'S{_i}{_j}'] = data.scalar.grid.model_S(_i, _j, _fit_freq)")
+        lines.append("        _fit_path = os.path.join(currDir, f\"{ProjectName}_{ResultTimeCode}_fit.npz\")")
+        lines.append("        np.savez(_fit_path, **_fit_export)")
+        lines.append("        print(f'Fitted S-parameters saved to: {_fit_path}')")
+        lines.append("    except Exception as _fit_err:")
+        lines.append("        print(f'S-parameter fitting skipped: {_fit_err}')")
+        lines.append("")
+        _n_ports = len(active_script_ports)
         _ts_ext = f"s{_n_ports}p"
         lines.append("data.scalar.grid.export_touchstone(")
         lines.append(f"    os.path.join(currDir, f\"{{ProjectName}}_{{ResultTimeCode}}.{_ts_ext}\"),")
@@ -2413,6 +2680,12 @@ class ViaWindow(QMainWindow):
                 "pad_um":        self._stitch_pad.value(),
             },
             "feed": {
+                "ports": {
+                    "1": self._get_feed_port_config(1),
+                    "2": self._get_feed_port_config(2),
+                    "3": self._get_feed_port_config(3),
+                    "4": self._get_feed_port_config(4),
+                },
                 "start": {
                     "type": self._feed_start_type.currentText(),
                     "trace_width_um": self._feed_start_trace_width_um.value(),
@@ -2431,6 +2704,14 @@ class ViaWindow(QMainWindow):
                 "f_stop_ghz":  self._f_stop.value(),
                 "n_pts":       self._n_pts.value(),
                 "resolution_mm": self._res_mm.value(),
+                "mesh_local_enabled": self._mesh_local_enable.isChecked(),
+                "mesh_div_via": self._mesh_factor_sliders["via"].value(),
+                "mesh_div_ports": self._mesh_factor_sliders["ports"].value(),
+                "mesh_div_feed": self._mesh_factor_sliders["feed"].value(),
+                "mesh_div_planes": self._mesh_factor_sliders["planes"].value(),
+                "mesh_div_stitching": self._mesh_factor_sliders["stitching"].value(),
+                "sparam_fit_enabled": self._sparam_fit_enable.isChecked(),
+                "sparam_fit_n_pts": self._sparam_fit_n_pts.value(),
                 "n_workers":   self._n_workers.value(),
                 "show_structure_in_emerge": self._show_structure_in_emerge.isChecked(),
                 "show_labels_in_emerge": self._show_labels_in_emerge.isChecked(),
@@ -2453,7 +2734,6 @@ class ViaWindow(QMainWindow):
 
         via = state.get("via", {})
         stackup = state.get("stackup", _DEFAULT_STACKUP)
-        legacy_antipad_um = via.get("antipad_um", 800.0)
         normalized_stackup: list[dict] = []
         for row in stackup:
             row_copy = dict(row)
@@ -2465,8 +2745,6 @@ class ViaWindow(QMainWindow):
                     row_copy["role"] = "Plane"
                 else:
                     row_copy["role"] = "Signal"
-            if "antipad_um" not in row_copy:
-                row_copy["antipad_um"] = legacy_antipad_um if row_copy.get("role") == "Plane" else 0.0
             if "net" not in row_copy:
                 name_lower = row_copy.get("name", "").lower()
                 if row_copy.get("is_copper") and row_copy.get("role") == "Plane":
@@ -2538,20 +2816,44 @@ class ViaWindow(QMainWindow):
         }
         start_feed = feed.get("start", legacy_feed)
         end_feed = feed.get("end", legacy_feed)
+        feed_ports = feed.get("ports", {}) if isinstance(feed.get("ports", {}), dict) else {}
 
-        start_feed_type_idx = self._feed_start_type.findText(start_feed.get("type", "Trace"))
-        if start_feed_type_idx >= 0:
-            self._feed_start_type.setCurrentIndex(start_feed_type_idx)
-        self._feed_start_trace_width_um.setValue(start_feed.get("trace_width_um", 250.0))
-        self._feed_start_trace_length_um.setValue(start_feed.get("trace_length_um", 2000.0))
-        self._feed_start_trace_angle_deg.setValue(start_feed.get("trace_angle_deg", 180.0))
+        port1_feed = feed_ports.get("1", start_feed)
+        port2_feed = feed_ports.get("2", start_feed if is_diff else end_feed)
+        port3_feed = feed_ports.get("3", end_feed)
+        port4_feed = feed_ports.get("4", end_feed)
 
-        end_feed_type_idx = self._feed_end_type.findText(end_feed.get("type", "Trace"))
-        if end_feed_type_idx >= 0:
-            self._feed_end_type.setCurrentIndex(end_feed_type_idx)
-        self._feed_end_trace_width_um.setValue(end_feed.get("trace_width_um", 250.0))
-        self._feed_end_trace_length_um.setValue(end_feed.get("trace_length_um", 2000.0))
-        self._feed_end_trace_angle_deg.setValue(end_feed.get("trace_angle_deg", 0.0))
+        # Backward compatibility: legacy files only had start/end groups.
+        # In that case, mirror start→port2 and end→port4 when missing.
+        if "2" not in feed_ports:
+            port2_feed = dict(start_feed if is_diff else end_feed)
+        if "4" not in feed_ports:
+            port4_feed = dict(end_feed)
+
+        self._set_feed_port_config(1, {
+            "type": port1_feed.get("type", "Trace"),
+            "trace_width_um": port1_feed.get("trace_width_um", 250.0),
+            "trace_length_um": port1_feed.get("trace_length_um", 2000.0),
+            "trace_angle_deg": port1_feed.get("trace_angle_deg", 180.0),
+        })
+        self._set_feed_port_config(2, {
+            "type": port2_feed.get("type", "Trace"),
+            "trace_width_um": port2_feed.get("trace_width_um", 250.0),
+            "trace_length_um": port2_feed.get("trace_length_um", 2000.0),
+            "trace_angle_deg": port2_feed.get("trace_angle_deg", 180.0 if is_diff else 0.0),
+        })
+        self._set_feed_port_config(3, {
+            "type": port3_feed.get("type", "Trace"),
+            "trace_width_um": port3_feed.get("trace_width_um", 250.0),
+            "trace_length_um": port3_feed.get("trace_length_um", 2000.0),
+            "trace_angle_deg": port3_feed.get("trace_angle_deg", 0.0),
+        })
+        self._set_feed_port_config(4, {
+            "type": port4_feed.get("type", "Trace"),
+            "trace_width_um": port4_feed.get("trace_width_um", 250.0),
+            "trace_length_um": port4_feed.get("trace_length_um", 2000.0),
+            "trace_angle_deg": port4_feed.get("trace_angle_deg", 0.0),
+        })
         self._feed_controls_changed()
 
         sim = state.get("simulation", {})
@@ -2559,10 +2861,20 @@ class ViaWindow(QMainWindow):
         self._f_stop.setValue(    sim.get("f_stop_ghz",   10.0))
         self._n_pts.setValue(     sim.get("n_pts",        11))
         self._res_mm.setValue(    sim.get("resolution_mm", 0.25))
+        self._mesh_local_enable.setChecked(sim.get("mesh_local_enabled", False))
+        self._mesh_factor_sliders["via"].setValue(int(sim.get("mesh_div_via", 1)))
+        self._mesh_factor_sliders["ports"].setValue(int(sim.get("mesh_div_ports", 1)))
+        self._mesh_factor_sliders["feed"].setValue(int(sim.get("mesh_div_feed", 1)))
+        self._mesh_factor_sliders["planes"].setValue(int(sim.get("mesh_div_planes", 1)))
+        self._mesh_factor_sliders["stitching"].setValue(int(sim.get("mesh_div_stitching", 1)))
+        self._sparam_fit_enable.setChecked(sim.get("sparam_fit_enabled", False))
+        self._sparam_fit_n_pts.setValue(sim.get("sparam_fit_n_pts", 401))
         self._n_workers.setValue( sim.get("n_workers",    4))
         self._show_structure_in_emerge.setChecked(sim.get("show_structure_in_emerge", True))
         self._show_labels_in_emerge.setChecked(sim.get("show_labels_in_emerge", False))
         self._show_mesh_in_emerge.setChecked(sim.get("show_mesh_in_emerge", True))
+        self._simulation_controls_changed()
+        self._mesh_controls_changed()
 
         view3d = state.get("view3d", {})
         hidden_keys = view3d.get("hidden_keys", [])

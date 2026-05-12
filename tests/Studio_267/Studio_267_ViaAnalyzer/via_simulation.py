@@ -39,31 +39,31 @@ m = em.Simulation(ProjectName)
 m.check_version("2.5.5")
 
 # ── Materials ──────────────────────────────────────────────────────────────
-diel_0 = em.Material(er=3.76, tand=0.009, color="#2ca02c", opacity=0.2)
-diel_1 = em.Material(er=4.2, tand=0.02, color="#2ca02c", opacity=0.2)
+diel_0 = em.Material(er=1.0, tand=0.0, color="#2ca02c", opacity=0.2)
+diel_1 = em.Material(er=1.0, tand=0.02, color="#2ca02c", opacity=0.2)
 
 # ── Geometry parameters ──────────────────────────────────────────────────
-drill_r   = 0.125000 * mm  # via drill radius
+drill_r   = 0.195000 * mm  # via drill radius
 pad_r     = 0.250000 * mm  # landing pad radius
-antipad_r_default = 0.400000 * mm  # default clearance (antipad) radius
-domain_hw = 2.7500 * mm  # domain half-width
+antipad_r_default = 0.205000 * mm  # default clearance (antipad) radius
+domain_hw = 1.2500 * mm  # domain half-width
 signal_via_centers_mm = [(0.0, 0.0)]
-plane_antipad_r_mm_by_layer = { 2: 0.400000, 4: 0.400000 }
+plane_antipad_r_mm_by_layer = { 2: 0.205000, 4: 0.205000 }
 
 # ── Stackup layer volumes (Z=0 at top surface, going negative) ──────────
 # Signal copper layer: L1 (Signal)  z=[-0.0350, 0.0000] mm
 # (pads created and united with trace in the feed section below)
 
-# Dielectric layer: Core  z=[-0.2350, -0.0350] mm
-layer_1 = em.geo.Box(2*domain_hw, 2*domain_hw, 0.200000*mm,
-    position=(-domain_hw, -domain_hw, -0.235000*mm),
+# Dielectric layer: Core  z=[-0.0850, -0.0350] mm
+layer_1 = em.geo.Box(2*domain_hw, 2*domain_hw, 0.050000*mm,
+    position=(-domain_hw, -domain_hw, -0.085000*mm),
     alignment=em.geo.Alignment.CORNER,
     name="layer_1")
 layer_1.material = diel_0
 
-# Reference copper plane: L2 (GND)  z=[-0.2700, -0.2350] mm
+# Reference copper plane: L2 (GND)  z=[-0.1200, -0.0850] mm
 layer_2 = em.geo.Box(2*domain_hw, 2*domain_hw, 0.035000*mm,
-    position=(-domain_hw, -domain_hw, -0.270000*mm),
+    position=(-domain_hw, -domain_hw, -0.120000*mm),
     alignment=em.geo.Alignment.CORNER,
     name="layer_2")
 layer_2.material = em.lib.PEC
@@ -73,20 +73,20 @@ if 2 in plane_antipad_r_mm_by_layer and (_do_sig_clear or _do_stub_clear):
     _ap_r = plane_antipad_r_mm_by_layer[2] * mm
     for _vi, (_vx, _vy) in enumerate(signal_via_centers_mm):
         _ap = em.geo.Cylinder(_ap_r, 0.035000*mm,
-            cs=em.GCS.displace(_vx*mm, _vy*mm, -0.270000*mm),
+            cs=em.GCS.displace(_vx*mm, _vy*mm, -0.120000*mm),
             name=f"layer_2_antipad_{_vi}")
         layer_2 = em.geo.subtract(layer_2, _ap)
 
-# Dielectric layer: Prepreg  z=[-1.2700, -0.2700] mm
-layer_3 = em.geo.Box(2*domain_hw, 2*domain_hw, 1.000000*mm,
-    position=(-domain_hw, -domain_hw, -1.270000*mm),
+# Dielectric layer: Prepreg  z=[-3.1200, -0.1200] mm
+layer_3 = em.geo.Box(2*domain_hw, 2*domain_hw, 3.000000*mm,
+    position=(-domain_hw, -domain_hw, -3.120000*mm),
     alignment=em.geo.Alignment.CORNER,
     name="layer_3")
 layer_3.material = diel_1
 
-# Reference copper plane: L3 (Power)  z=[-1.3050, -1.2700] mm
+# Reference copper plane: L3 (Power)  z=[-3.1550, -3.1200] mm
 layer_4 = em.geo.Box(2*domain_hw, 2*domain_hw, 0.035000*mm,
-    position=(-domain_hw, -domain_hw, -1.305000*mm),
+    position=(-domain_hw, -domain_hw, -3.155000*mm),
     alignment=em.geo.Alignment.CORNER,
     name="layer_4")
 layer_4.material = em.lib.PEC
@@ -96,79 +96,77 @@ if 4 in plane_antipad_r_mm_by_layer and (_do_sig_clear or _do_stub_clear):
     _ap_r = plane_antipad_r_mm_by_layer[4] * mm
     for _vi, (_vx, _vy) in enumerate(signal_via_centers_mm):
         _ap = em.geo.Cylinder(_ap_r, 0.035000*mm,
-            cs=em.GCS.displace(_vx*mm, _vy*mm, -1.305000*mm),
+            cs=em.GCS.displace(_vx*mm, _vy*mm, -3.155000*mm),
             name=f"layer_4_antipad_{_vi}")
         layer_4 = em.geo.subtract(layer_4, _ap)
 
-# Dielectric layer: Core  z=[-1.5050, -1.3050] mm
-layer_5 = em.geo.Box(2*domain_hw, 2*domain_hw, 0.200000*mm,
-    position=(-domain_hw, -domain_hw, -1.505000*mm),
+# Dielectric layer: Core  z=[-3.2050, -3.1550] mm
+layer_5 = em.geo.Box(2*domain_hw, 2*domain_hw, 0.050000*mm,
+    position=(-domain_hw, -domain_hw, -3.205000*mm),
     alignment=em.geo.Alignment.CORNER,
     name="layer_5")
 layer_5.material = diel_0
 
-# Signal copper layer: L4 (Signal)  z=[-1.5400, -1.5050] mm
+# Signal copper layer: L4 (Signal)  z=[-3.2400, -3.2050] mm
 # (pads created and united with trace in the feed section below)
 
 # ── Signal via barrel ────────────────────────────────────────────────────
-# From L1 (Signal) z_top=0.0000mm  to L4 (Signal) z_bot=-1.5400mm
-via_barrel = em.geo.Cylinder(drill_r, 1.540000*mm,
-    cs=em.GCS.displace(0, 0, -1.540000*mm),
+# From L1 (Signal) z_top=0.0000mm  to L4 (Signal) z_bot=-3.2400mm
+via_barrel = em.geo.Cylinder(drill_r, 3.240000*mm,
+    cs=em.GCS.displace(0, 0, -3.240000*mm),
     name="via_barrel")
 via_barrel.material = em.lib.PEC
 
 # ── Via holes used to clear intersected dielectric layers ───────────────
 _diel_via_holes = []  # (x[m], y[m], r[m], z_bot[m], z_top[m])
 for _vx, _vy in signal_via_centers_mm:
-    _diel_via_holes.append((_vx*mm, _vy*mm, drill_r, -1.540000*mm, 0.000000*mm))
+    _diel_via_holes.append((_vx*mm, _vy*mm, drill_r, -3.240000*mm, 0.000000*mm))
 
-# ── Entry feed geometry ──────────────────────────────────────────────────
-# Layer: L1 (Signal),  type=trace, angle=180.0°
-trace_start = em.geo.Box(2.000000*mm, 0.250000*mm, 0.035000*mm,
-    position=(0.214006*mm, -0.125000*mm, -0.035000*mm),
+# ── Entry feed geometry (inputs) ─────────────────────────────────────────
+# Layer: L1 (Signal) (ports 1,2 in differential mode)
+# Port 1 input feed: type=trace, angle=0.0°, y=0.000000mm
+trace_port1 = em.geo.Box(0.250000*mm, 0.500000*mm, 0.035000*mm,
+    position=(0.000000*mm, -0.250000*mm, -0.035000*mm),
     alignment=em.geo.Alignment.CORNER,
-    name="trace_start")
-trace_start.material = em.lib.PEC
-trace_start = em.geo.rotate(trace_start, c0=(0, 0, 0),
-    ax=(0, 0, 1), angle=180.0000)
-# Landing pads on entry signal layer — united with trace_start
-for _vx, _vy in signal_via_centers_mm:
-    _pad = em.geo.Cylinder(pad_r, 0.035000*mm,
-        cs=em.GCS.displace(_vx*mm, _vy*mm, -0.035000*mm),
-        name="entry_pad")
-    _pad.material = em.lib.PEC
-    trace_start = em.geo.add(trace_start, _pad)
+    name="trace_port1")
+trace_port1.material = em.lib.PEC
+_pad_p1 = em.geo.Cylinder(pad_r, 0.035000*mm,
+    cs=em.GCS.displace(0, 0.000000*mm, -0.035000*mm),
+    name="entry_pad_p1")
+_pad_p1.material = em.lib.PEC
+trace_port1 = em.geo.add(trace_port1, _pad_p1)
+trace_start = trace_port1
 
-# ── Exit feed geometry ───────────────────────────────────────────────────
-# Layer: L4 (Signal),  type=trace, angle=0.0°
-trace_end = em.geo.Box(2.000000*mm, 0.250000*mm, 0.035000*mm,
-    position=(0.214006*mm, -0.125000*mm, -1.540000*mm),
+# ── Exit feed geometry (outputs) ─────────────────────────────────────────
+# Layer: L4 (Signal) (ports 3,4 in differential mode)
+# Port 2 output feed: type=trace, angle=0.0°, y=0.000000mm
+trace_port2 = em.geo.Box(0.250000*mm, 0.500000*mm, 0.035000*mm,
+    position=(0.000000*mm, -0.250000*mm, -3.240000*mm),
     alignment=em.geo.Alignment.CORNER,
-    name="trace_end")
-trace_end.material = em.lib.PEC
-# Landing pads on exit signal layer — united with trace_end
-for _vx, _vy in signal_via_centers_mm:
-    _pad = em.geo.Cylinder(pad_r, 0.035000*mm,
-        cs=em.GCS.displace(_vx*mm, _vy*mm, -1.540000*mm),
-        name="exit_pad")
-    _pad.material = em.lib.PEC
-    trace_end = em.geo.add(trace_end, _pad)
+    name="trace_port2")
+trace_port2.material = em.lib.PEC
+_pad_p2 = em.geo.Cylinder(pad_r, 0.035000*mm,
+    cs=em.GCS.displace(0, 0.000000*mm, -3.240000*mm),
+    name="exit_pad_p2")
+_pad_p2.material = em.lib.PEC
+trace_port2 = em.geo.add(trace_port2, _pad_p2)
+trace_end = trace_port2
 
 # ── Stitching vias ───────────────────────────────────────────────────────
-# Pattern: Ring, N=8 vias
-_s_drill_r = 0.125000 * mm
+# Pattern: Grid, N=8 vias
+_s_drill_r = 0.195000 * mm
 _s_pad_r   = 0.250000 * mm
-_s_h       = 1.540000 * mm
-_s_z_bot   = -1.540000 * mm
+_s_h       = 3.240000 * mm
+_s_z_bot   = -3.240000 * mm
 _stitch_coords = [
-    (2.000000, 0.000000),  # mm
-    (1.414214, 1.414214),  # mm
-    (0.000000, 2.000000),  # mm
-    (-1.414214, 1.414214),  # mm
-    (-2.000000, 0.000000),  # mm
-    (-1.414214, -1.414214),  # mm
-    (-0.000000, -2.000000),  # mm
-    (1.414214, -1.414214),  # mm
+    (-0.800000, -0.800000),  # mm
+    (0.000000, -0.800000),  # mm
+    (0.800000, -0.800000),  # mm
+    (-0.800000, 0.000000),  # mm
+    (0.800000, 0.000000),  # mm
+    (-0.800000, 0.800000),  # mm
+    (0.000000, 0.800000),  # mm
+    (0.800000, 0.800000),  # mm
 ]
 for _si, (_sx, _sy) in enumerate(_stitch_coords):
     _sv = em.geo.Cylinder(_s_drill_r, _s_h,
@@ -187,11 +185,11 @@ for _si, (_sx, _sy) in enumerate(_stitch_coords):
     _spad_from = em.geo.subtract(_spad_from, _spad_from_hole)
     # Annular pad on end layer (pad_r ring minus drill hole — no overlap with barrel)
     _spad_to = em.geo.Cylinder(_s_pad_r, 0.035000*mm,
-        cs=em.GCS.displace(_sx*mm, _sy*mm, -1.540000*mm),
+        cs=em.GCS.displace(_sx*mm, _sy*mm, -3.240000*mm),
         name=f"stitch_{_si}_pad_to")
     _spad_to.material = em.lib.PEC
     _spad_to_hole = em.geo.Cylinder(_s_drill_r, 0.035000*mm,
-        cs=em.GCS.displace(_sx*mm, _sy*mm, -1.540000*mm),
+        cs=em.GCS.displace(_sx*mm, _sy*mm, -3.240000*mm),
         name=f"stitch_{_si}_pad_to_hole")
     _spad_to = em.geo.subtract(_spad_to, _spad_to_hole)
 
@@ -202,38 +200,38 @@ for _si, (_sx, _sy) in enumerate(_stitch_coords):
 # Stitch barrel clearance on Plane layer 2 (L2 (GND))
 for _si, (_sx, _sy) in enumerate(_stitch_coords):
     _sdh = em.geo.Cylinder(_s_drill_r, 0.035000*mm,
-        cs=em.GCS.displace(_sx*mm, _sy*mm, -0.270000*mm),
+        cs=em.GCS.displace(_sx*mm, _sy*mm, -0.120000*mm),
         name=f"layer_2_stitch_{_si}_drill_clear")
     layer_2 = em.geo.subtract(layer_2, _sdh)
 # Stitch barrel clearance on Plane layer 4 (L3 (Power))
 for _si, (_sx, _sy) in enumerate(_stitch_coords):
     _sdh = em.geo.Cylinder(_s_drill_r, 0.035000*mm,
-        cs=em.GCS.displace(_sx*mm, _sy*mm, -1.305000*mm),
+        cs=em.GCS.displace(_sx*mm, _sy*mm, -3.155000*mm),
         name=f"layer_4_stitch_{_si}_drill_clear")
     layer_4 = em.geo.subtract(layer_4, _sdh)
 
 # ── Dielectric clearances for all crossing vias ─────────────────────────
 # Dielectric via clearances on layer 1 (Core)
 for _hi, (_hx, _hy, _hr, _hz_bot, _hz_top) in enumerate(_diel_via_holes):
-    if not (_hz_top <= -0.235000*mm or _hz_bot >= -0.035000*mm):
-        _dh = em.geo.Cylinder(_hr, 0.200000*mm,
-            cs=em.GCS.displace(_hx, _hy, -0.235000*mm),
+    if not (_hz_top <= -0.085000*mm or _hz_bot >= -0.035000*mm):
+        _dh = em.geo.Cylinder(_hr, 0.050000*mm,
+            cs=em.GCS.displace(_hx, _hy, -0.085000*mm),
             name=f"layer_1_diel_clear_{_hi}")
         layer_1 = em.geo.subtract(layer_1, _dh)
 
 # Dielectric via clearances on layer 3 (Prepreg)
 for _hi, (_hx, _hy, _hr, _hz_bot, _hz_top) in enumerate(_diel_via_holes):
-    if not (_hz_top <= -1.270000*mm or _hz_bot >= -0.270000*mm):
-        _dh = em.geo.Cylinder(_hr, 1.000000*mm,
-            cs=em.GCS.displace(_hx, _hy, -1.270000*mm),
+    if not (_hz_top <= -3.120000*mm or _hz_bot >= -0.120000*mm):
+        _dh = em.geo.Cylinder(_hr, 3.000000*mm,
+            cs=em.GCS.displace(_hx, _hy, -3.120000*mm),
             name=f"layer_3_diel_clear_{_hi}")
         layer_3 = em.geo.subtract(layer_3, _dh)
 
 # Dielectric via clearances on layer 5 (Core)
 for _hi, (_hx, _hy, _hr, _hz_bot, _hz_top) in enumerate(_diel_via_holes):
-    if not (_hz_top <= -1.505000*mm or _hz_bot >= -1.305000*mm):
-        _dh = em.geo.Cylinder(_hr, 0.200000*mm,
-            cs=em.GCS.displace(_hx, _hy, -1.505000*mm),
+    if not (_hz_top <= -3.205000*mm or _hz_bot >= -3.155000*mm):
+        _dh = em.geo.Cylinder(_hr, 0.050000*mm,
+            cs=em.GCS.displace(_hx, _hy, -3.205000*mm),
             name=f"layer_5_diel_clear_{_hi}")
         layer_5 = em.geo.subtract(layer_5, _dh)
 
@@ -242,39 +240,67 @@ for _hi, (_hx, _hy, _hr, _hz_bot, _hz_top) in enumerate(_diel_via_holes):
 # Port sheet = 2D Plate at the far end of each trace.
 # Width = trace width, Height = distance to nearest reference plane.
 # direction=(0,0,1) = E-field vertical (GND→signal).
-# Port 1: far end of entry trace — height=0.2350mm
+# Port 1 (input): far end of feed trace — height=0.0850mm
 port1_sheet = em.geo.Plate(
-    (-2.214006*mm, 0.125000*mm, -0.235000*mm),
-    (-0.000000*mm, -0.250000*mm, 0),
-    (0, 0, 0.235000*mm),
+    (0.250000*mm, -0.250000*mm, -0.085000*mm),
+    (-0.000000*mm, 0.500000*mm, 0),
+    (0, 0, 0.085000*mm),
     name="port1_sheet")
-# Port 2: far end of exit trace — height=0.2350mm
+# Port 2 (output): far end of feed trace — height=0.0850mm
 port2_sheet = em.geo.Plate(
-    (2.214006*mm, -0.125000*mm, -1.540000*mm),
-    (-0.000000*mm, 0.250000*mm, 0),
-    (0, 0, 0.235000*mm),
+    (0.250000*mm, -0.250000*mm, -3.240000*mm),
+    (-0.000000*mm, 0.500000*mm, 0),
+    (0, 0, 0.085000*mm),
     name="port2_sheet")
 # ── Geometry finalisation ────────────────────────────────────────────────
+# Open region (1mm padding around structure)
+air = em.geo.open_region(1*mm, 1*mm, 1*mm)
+
 m.commit_geometry()
-m.view()
 
 # ── Simulation setup ─────────────────────────────────────────────────────
-m.mw.set_frequency_range(0.0100e9, 10.0000e9, 11)
+m.mw.set_frequency_range(0.0100e9, 40.0000e9, 41)
 
 # ── Mesh ─────────────────────────────────────────────────────────────────
 m.mw.set_resolution(0.250)  # fraction of max wavelength
 m.settings.safe_mode = True
+mesh_local_enabled = True
+mesh_div_via = 1
+mesh_div_ports = 1
+mesh_div_feed = 10
+mesh_div_planes = 1
+mesh_div_stitching = 10
+if mesh_local_enabled:
+    try:
+        _local_base = max(1e-6, 0.250000) * mm
+        _via_size = _local_base / max(mesh_div_via, 1)
+        _ports_size = _local_base / max(mesh_div_ports, 1)
+        _feed_size = _local_base / max(mesh_div_feed, 1)
+        _plane_size = _local_base / max(mesh_div_planes, 1)
+        _stitch_size = _local_base / max(mesh_div_stitching, 1)
+        m.mesher.set_boundary_size(via_barrel, _via_size)
+        m.mesher.set_boundary_size(trace_start, _feed_size)
+        m.mesher.set_boundary_size(trace_end, _feed_size)
+        m.mesher.set_boundary_size(port1_sheet, _ports_size)
+        m.mesher.set_boundary_size(port2_sheet, _ports_size)
+        m.mesher.set_boundary_size(layer_2, _plane_size)
+        m.mesher.set_boundary_size(layer_4, _plane_size)
+        if 'stitch_group' in locals():
+            m.mesher.set_boundary_size(stitch_group, _stitch_size)
+    except Exception as _mesh_err:
+        print(f'Local mesh refinement skipped: {_mesh_err}')
 
 
 
 
 # ── Lumped ports ─────────────────────────────────────────────────────────
+# Single-ended numbering: port 1 = input on entry layer; port 2 = output on exit layer.
 p1 = m.mw.bc.LumpedPort(port1_sheet, 1,
-    width=0.250000*mm, height=0.235000*mm,
+    width=0.500000*mm, height=0.085000*mm,
     direction=(0, 0, 1))
 
 p2 = m.mw.bc.LumpedPort(port2_sheet, 2,
-    width=0.250000*mm, height=0.235000*mm,
+    width=0.500000*mm, height=0.085000*mm,
     direction=(0, 0, 1))
 
 m.generate_mesh()
@@ -285,6 +311,21 @@ data = m.mw.run_sweep(False, n_workers=4)
 m.save()
 
 ResultTimeCode = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+sparam_fit_enabled = True
+sparam_fit_points = 401
+if sparam_fit_enabled:
+    try:
+        _fit_freq = data.scalar.grid.dense_f(int(max(3, sparam_fit_points)))
+        _fit_export = {'freq_hz': np.asarray(_fit_freq)}
+        for _i in range(1, 3):
+            for _j in range(1, 3):
+                _fit_export[f'S{_i}{_j}'] = data.scalar.grid.model_S(_i, _j, _fit_freq)
+        _fit_path = os.path.join(currDir, f"{ProjectName}_{ResultTimeCode}_fit.npz")
+        np.savez(_fit_path, **_fit_export)
+        print(f'Fitted S-parameters saved to: {_fit_path}')
+    except Exception as _fit_err:
+        print(f'S-parameter fitting skipped: {_fit_err}')
+
 data.scalar.grid.export_touchstone(
     os.path.join(currDir, f"{ProjectName}_{ResultTimeCode}.s2p"),
     Z0ref=50, format="RI",

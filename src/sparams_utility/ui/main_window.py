@@ -99,7 +99,7 @@ class MainWindow(QMainWindow):
         self._project_tree = QTreeWidget()
         self._project_tree.setHeaderHidden(True)
         self._project_tree.setMinimumWidth(220)
-        self._project_tree.itemClicked.connect(self._on_project_tree_item_clicked)
+        self._project_tree.itemDoubleClicked.connect(self._on_project_tree_item_clicked)
         self._project_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self._project_tree.customContextMenuRequested.connect(self._on_project_tree_context_menu)
 
