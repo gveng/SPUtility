@@ -1,4 +1,4 @@
-"""Via Analysis Window for S-Params Studio — 3D EMerge-script edition.
+﻿"""Via Analysis Window for S-Params Studio â€” 3D EMerge-script edition.
 
 Provides a tabbed parameter UI (left panel) and an interactive 3D via
 visualisation using pyqtgraph.opengl (right panel).  The window also
@@ -11,6 +11,7 @@ Follows the same architectural conventions as the rest of the app:
 """
 from __future__ import annotations
 
+import importlib
 import math
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
@@ -48,27 +50,203 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWidgets import QMessageBox
 
-# ── Optional OpenGL ───────────────────────────────────────────────────────────
+# â”€â”€ Optional OpenGL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 try:
     import pyqtgraph.opengl as gl
     _GL_AVAILABLE = True
 except ImportError:
     _GL_AVAILABLE = False
 
-# ── Default stackup ───────────────────────────────────────────────────────────
+# â”€â”€ Default stackup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _DEFAULT_STACKUP = [
-    {"name": "L1 (Signal)",  "thickness_um": 35.0,   "is_copper": True,  "role": "Signal",     "net": "",    "er": 1.0,  "tand": 0.0},
-    {"name": "Core",         "thickness_um": 200.0,  "is_copper": False, "role": "Dielectric", "net": "",    "er": 3.76, "tand": 0.009},
-    {"name": "L2 (GND)",     "thickness_um": 35.0,   "is_copper": True,  "role": "Plane",      "net": "GND", "er": 1.0,  "tand": 0.0},
-    {"name": "Prepreg",      "thickness_um": 1000.0, "is_copper": False, "role": "Dielectric", "net": "",    "er": 4.2,  "tand": 0.02},
-    {"name": "L3 (Power)",   "thickness_um": 35.0,   "is_copper": True,  "role": "Plane",      "net": "PWR", "er": 1.0,  "tand": 0.0},
-    {"name": "Core",         "thickness_um": 200.0,  "is_copper": False, "role": "Dielectric", "net": "",    "er": 3.76, "tand": 0.009},
-    {"name": "L4 (Signal)",  "thickness_um": 35.0,   "is_copper": True,  "role": "Signal",     "net": "",    "er": 1.0,  "tand": 0.0},
+    {"name": "L1 (Signal)",  "thickness_um": 35.0,   "is_copper": True,  "role": "Signal",     "net": "",    "er": 1.0,  "tand": 0.0,   "material_id": "COPPER"},
+    {"name": "Core",         "thickness_um": 200.0,  "is_copper": False, "role": "Dielectric", "net": "",    "er": 3.76, "tand": 0.009, "material_id": "DIEL_FR4"},
+    {"name": "L2 (GND)",     "thickness_um": 35.0,   "is_copper": True,  "role": "Plane",      "net": "GND", "er": 1.0,  "tand": 0.0,   "material_id": "COPPER"},
+    {"name": "Prepreg",      "thickness_um": 1000.0, "is_copper": False, "role": "Dielectric", "net": "",    "er": 4.2,  "tand": 0.02,  "material_id": "DIEL_FR4"},
+    {"name": "L3 (Power)",   "thickness_um": 35.0,   "is_copper": True,  "role": "Plane",      "net": "PWR", "er": 1.0,  "tand": 0.0,   "material_id": "COPPER"},
+    {"name": "Core",         "thickness_um": 200.0,  "is_copper": False, "role": "Dielectric", "net": "",    "er": 3.76, "tand": 0.009, "material_id": "DIEL_FR4"},
+    {"name": "L4 (Signal)",  "thickness_um": 35.0,   "is_copper": True,  "role": "Signal",     "net": "",    "er": 1.0,  "tand": 0.0,   "material_id": "COPPER"},
 ]
 
-# ─────────────────────────────────────────────────────────────────────────────
+_CUSTOM_CONDUCTOR_ID = "__CUSTOM_CONDUCTOR__"
+_CUSTOM_DIELECTRIC_ID = "__CUSTOM_DIELECTRIC__"
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        raw = getattr(value, "value", value)
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _detect_emerge_version(default: str = "2.5.5") -> str:
+    """Return the version string of the currently installed `emerge` package.
+
+    Falls back to ``default`` if EMerge is not importable or exposes no
+    ``__version__`` attribute. The result is used to populate the
+    ``m.check_version(...)`` call in generated simulation scripts so that the
+    script remains compatible with the version actually installed on the
+    machine that generated it.
+    """
+    try:
+        em_mod = importlib.import_module("emerge")
+        version = getattr(em_mod, "__version__", None)
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+    except Exception:
+        pass
+    return default
+
+
+def _build_emerge_material_catalog() -> list[dict[str, object]]:
+    catalog: list[dict[str, object]] = [
+        {
+            "id": _CUSTOM_CONDUCTOR_ID,
+            "name": "Custom Conductor",
+            "kind": "conductor",
+            "source": "custom",
+            "library_symbol": "",
+            "er": 1.0,
+            "ur": 1.0,
+            "tand": 0.0,
+            "cond": 5.8e7,
+            "metal": True,
+            "color": "#8b5a2b",
+            "opacity": 1.0,
+        },
+        {
+            "id": _CUSTOM_DIELECTRIC_ID,
+            "name": "Custom Dielectric",
+            "kind": "dielectric",
+            "source": "custom",
+            "library_symbol": "",
+            "er": 4.2,
+            "ur": 1.0,
+            "tand": 0.02,
+            "cond": 0.0,
+            "metal": False,
+            "color": "#2ca02c",
+            "opacity": 0.2,
+        },
+    ]
+
+    try:
+        em_mod = importlib.import_module("emerge")
+        em_lib = getattr(em_mod, "lib", None)
+        if em_lib is None:
+            raise RuntimeError("emerge.lib not available")
+
+        for sym in sorted(s for s in dir(em_lib) if s.isupper()):
+            mat_obj = getattr(em_lib, sym)
+            if not hasattr(mat_obj, "er") or not hasattr(mat_obj, "cond"):
+                continue
+            er = _safe_float(getattr(mat_obj, "er", 1.0), 1.0)
+            ur = _safe_float(getattr(mat_obj, "ur", 1.0), 1.0)
+            tand = _safe_float(getattr(mat_obj, "tand", 0.0), 0.0)
+            cond = _safe_float(getattr(mat_obj, "cond", 0.0), 0.0)
+            metal = bool(getattr(mat_obj, "_metal", False))
+            color = str(getattr(mat_obj, "color", "#BEBEBE"))
+            opacity = _safe_float(getattr(mat_obj, "opacity", 1.0), 1.0)
+
+            if sym in ("COPPER", "PEC") or sym.startswith(("MET_", "SEMI_")):
+                kind = "conductor"
+            elif sym in ("AIR", "VACUUM") or sym.startswith(("DIEL_", "LIQ_")):
+                kind = "dielectric"
+            else:
+                kind = "conductor" if (metal or cond >= 1e3) else "dielectric"
+
+            catalog.append(
+                {
+                    "id": sym,
+                    "name": sym,
+                    "kind": kind,
+                    "source": "em.lib",
+                    "library_symbol": sym,
+                    "er": er,
+                    "ur": ur,
+                    "tand": tand,
+                    "cond": cond,
+                    "metal": metal,
+                    "color": color,
+                    "opacity": opacity,
+                }
+            )
+    except Exception:
+        catalog.extend(
+            [
+                {
+                    "id": "PEC",
+                    "name": "PEC",
+                    "kind": "conductor",
+                    "source": "em.lib",
+                    "library_symbol": "PEC",
+                    "er": 1.0,
+                    "ur": 1.0,
+                    "tand": 0.0,
+                    "cond": 1.0e30,
+                    "metal": True,
+                    "color": "#BEBEBE",
+                    "opacity": 1.0,
+                },
+                {
+                    "id": "COPPER",
+                    "name": "COPPER",
+                    "kind": "conductor",
+                    "source": "em.lib",
+                    "library_symbol": "COPPER",
+                    "er": 1.0,
+                    "ur": 1.0,
+                    "tand": 0.0,
+                    "cond": 5.8e7,
+                    "metal": True,
+                    "color": "#b87333",
+                    "opacity": 1.0,
+                },
+                {
+                    "id": "DIEL_FR4",
+                    "name": "DIEL_FR4",
+                    "kind": "dielectric",
+                    "source": "em.lib",
+                    "library_symbol": "DIEL_FR4",
+                    "er": 4.4,
+                    "ur": 1.0,
+                    "tand": 0.015,
+                    "cond": 0.0,
+                    "metal": False,
+                    "color": "#2ca02c",
+                    "opacity": 0.2,
+                },
+                {
+                    "id": "AIR",
+                    "name": "AIR",
+                    "kind": "dielectric",
+                    "source": "em.lib",
+                    "library_symbol": "AIR",
+                    "er": 1.0,
+                    "ur": 1.0,
+                    "tand": 0.0,
+                    "cond": 0.0,
+                    "metal": False,
+                    "color": "#d8f2ff",
+                    "opacity": 0.1,
+                },
+            ]
+        )
+
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict[str, object]] = []
+    for entry in catalog:
+        key = (str(entry.get("kind", "")), str(entry.get("id", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  Module-level 3-D mesh helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _cyl_mesh(r: float, h: float, z0: float = 0.0, n: int = 32):
     """Solid cylinder mesh.  Returns (verts: float32 (N,3), faces: int32 (M,3))."""
@@ -87,7 +265,7 @@ def _cyl_mesh(r: float, h: float, z0: float = 0.0, n: int = 32):
     faces = []
     for i in range(n):
         j = (i + 1) % n
-        # side quad → 2 triangles
+        # side quad â†’ 2 triangles
         faces.append([i,     j,     n + j])
         faces.append([i,     n + j, n + i])
         # bottom cap (fan from 2n)
@@ -186,7 +364,7 @@ def _cyl_wall_mesh(r: float, h: float, z0: float = 0.0, n: int = 48):
 
 
 def _box_mesh(hw: float, hd: float, z0: float, z1: float):
-    """Rectangular box (±hw in X, ±hd in Y).  Returns (verts, faces)."""
+    """Rectangular box (Â±hw in X, Â±hd in Y).  Returns (verts, faces)."""
     verts = np.array([
         [-hw, -hd, z0], [ hw, -hd, z0], [ hw,  hd, z0], [-hw,  hd, z0],
         [-hw, -hd, z1], [ hw, -hd, z1], [ hw,  hd, z1], [-hw,  hd, z1],
@@ -319,9 +497,9 @@ def _trace_box_mesh(length: float, width: float, z0: float, z1: float, angle_deg
     return verts, faces
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  ViaWindow
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class ViaWindow(QMainWindow):
     """Parametric via 3-D visualiser and EMerge script generator."""
@@ -329,7 +507,7 @@ class ViaWindow(QMainWindow):
     project_modified = Signal()
     simulation_completed = Signal(str)  # emitted with result .sNp path on success
 
-    # ── construction ─────────────────────────────────────────────────────────
+    # â”€â”€ construction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def __init__(self, parent=None, window_number: int = 1) -> None:
         super().__init__(parent)
@@ -349,8 +527,16 @@ class ViaWindow(QMainWindow):
         self._scene_group_items: dict[str, QTreeWidgetItem] = {}
         self._scene_object_items: dict[str, QTreeWidgetItem] = {}
         self._scene_gl_items: dict[str, list] = {}
+        self._scene_base_alpha_by_item_id: dict[int, float] = {}
+        self._scene_transparency_pct_by_key: dict[str, int] = {}
 
-        # ── build UI ──────────────────────────────────────────────────────
+        self._material_catalog = _build_emerge_material_catalog()
+        self._material_by_id = {str(m["id"]): m for m in self._material_catalog}
+        self._conductor_material_ids = [str(m["id"]) for m in self._material_catalog if str(m.get("kind")) == "conductor"]
+        self._dielectric_material_ids = [str(m["id"]) for m in self._material_catalog if str(m.get("kind")) == "dielectric"]
+        self._via_material_id = self._default_material_id(True)
+
+        # â”€â”€ build UI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         central = QWidget()
         self.setCentralWidget(central)
         root_vbox = QVBoxLayout(central)
@@ -365,7 +551,7 @@ class ViaWindow(QMainWindow):
         left_vbox = QVBoxLayout(left_container)
         left_vbox.setContentsMargins(0, 0, 0, 0)
 
-        # ── Name row ─────────────────────────────────────────────────────
+        # â”€â”€ Name row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         name_row = QHBoxLayout()
         name_row.setContentsMargins(4, 4, 4, 2)
         name_row.addWidget(QLabel("Name:"))
@@ -412,8 +598,8 @@ class ViaWindow(QMainWindow):
         # toolbar row
         toolbar_row = QHBoxLayout()
         self._btn_reset  = QPushButton("Reset View")
-        self._btn_top    = QPushButton("Top ↑")
-        self._btn_side   = QPushButton("Side →")
+        self._btn_top    = QPushButton("Top")
+        self._btn_side   = QPushButton("Side")
         self._btn_iso    = QPushButton("ISO")
         self._chk_autorefresh = QCheckBox("Auto-refresh")
         self._chk_autorefresh.setChecked(True)
@@ -427,16 +613,16 @@ class ViaWindow(QMainWindow):
         splitter.addWidget(right_container)
         splitter.setSizes([480, 1020])
 
-        # ── connect camera buttons ────────────────────────────────────────
+        # â”€â”€ connect camera buttons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self._btn_reset.clicked.connect(self._cam_reset)
         self._btn_top.clicked.connect(self._cam_top)
         self._btn_side.clicked.connect(self._cam_side)
         self._btn_iso.clicked.connect(self._cam_iso)
 
-        # ── name change ───────────────────────────────────────────────────
+        # â”€â”€ name change â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self._name_edit.textChanged.connect(self._on_name_changed)
 
-        # ── initial 3-D scene ─────────────────────────────────────────────
+        # â”€â”€ initial 3-D scene â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if _GL_AVAILABLE:
             self._rebuild_3d()
 
@@ -446,16 +632,116 @@ class ViaWindow(QMainWindow):
         if not self._suppress_signals:
             self.project_modified.emit()
 
-    # ── Tab 0 – Stackup ───────────────────────────────────────────────────
+    def _default_material_id(self, is_copper: bool) -> str:
+        preferred = "COPPER" if is_copper else "DIEL_FR4"
+        fallback = _CUSTOM_CONDUCTOR_ID if is_copper else _CUSTOM_DIELECTRIC_ID
+        ids = self._conductor_material_ids if is_copper else self._dielectric_material_ids
+        if preferred in ids:
+            return preferred
+        if ids:
+            return ids[0]
+        return fallback
+
+    def _material_entry(self, material_id: str, is_copper: bool) -> dict[str, object]:
+        entry = self._material_by_id.get(str(material_id))
+        kind = "conductor" if is_copper else "dielectric"
+        if entry is None or str(entry.get("kind", "")) != kind:
+            default_id = self._default_material_id(is_copper)
+            entry = self._material_by_id.get(default_id, self._material_by_id.get(_CUSTOM_CONDUCTOR_ID if is_copper else _CUSTOM_DIELECTRIC_ID, {}))
+        return dict(entry) if isinstance(entry, dict) else {}
+
+    def _find_stackup_row_for_widget(self, widget: QWidget, column: int) -> int:
+        for row in range(self._stackup_table.rowCount()):
+            if self._stackup_table.cellWidget(row, column) is widget:
+                return row
+        return -1
+
+    def _populate_material_combo(self, combo: QComboBox, is_copper: bool, selected_id: str | None = None):
+        combo.blockSignals(True)
+        combo.clear()
+        ids = self._conductor_material_ids if is_copper else self._dielectric_material_ids
+        for mat_id in ids:
+            combo.addItem(mat_id, mat_id)
+        target_id = selected_id if selected_id in ids else self._default_material_id(is_copper)
+        idx = combo.findData(target_id)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _apply_material_to_row(self, row: int, update_cells: bool = True):
+        tbl = self._stackup_table
+        type_combo = tbl.cellWidget(row, 2)
+        material_combo = tbl.cellWidget(row, 7)
+        if not isinstance(type_combo, QComboBox) or not isinstance(material_combo, QComboBox):
+            return
+        is_copper = type_combo.currentIndex() == 0
+        mat_id = str(material_combo.currentData() or material_combo.currentText() or "")
+        entry = self._material_entry(mat_id, is_copper)
+        if not entry:
+            return
+
+        if update_cells:
+            er_item = tbl.item(row, 5)
+            tand_item = tbl.item(row, 6)
+            if er_item is not None:
+                er_item.setText(f"{float(entry.get('er', 1.0)):.6g}")
+            if tand_item is not None:
+                tand_item.setText(f"{float(entry.get('tand', 0.0)):.6g}")
+
+    def _on_stackup_type_changed(self):
+        if self._suppress_signals:
+            return
+        sender = self.sender()
+        if not isinstance(sender, QComboBox):
+            self._stackup_changed()
+            return
+        row = self._find_stackup_row_for_widget(sender, 2)
+        if row < 0:
+            self._stackup_changed()
+            return
+
+        is_copper = sender.currentIndex() == 0
+        role_combo = self._stackup_table.cellWidget(row, 3)
+        if isinstance(role_combo, QComboBox) and not is_copper:
+            role_combo.setCurrentText("Dielectric")
+
+        mat_combo = self._stackup_table.cellWidget(row, 7)
+        if isinstance(mat_combo, QComboBox):
+            selected_id = str(mat_combo.currentData() or "")
+            self._populate_material_combo(mat_combo, is_copper, selected_id=selected_id)
+        self._apply_material_to_row(row, update_cells=True)
+        self._stackup_changed()
+
+    def _on_stackup_material_changed(self):
+        if self._suppress_signals:
+            return
+        sender = self.sender()
+        if not isinstance(sender, QComboBox):
+            return
+        row = self._find_stackup_row_for_widget(sender, 7)
+        if row < 0:
+            return
+        self._apply_material_to_row(row, update_cells=True)
+        self._stackup_changed(rebuild_3d=False)
+
+    def _on_via_material_changed(self):
+        if self._suppress_signals:
+            return
+        sender = self.sender()
+        if not isinstance(sender, QComboBox):
+            return
+        self._via_material_id = str(sender.currentData() or sender.currentText() or self._default_material_id(True))
+        self._param_changed(rebuild_3d=False)
+
+    # â”€â”€ Tab 0 â€“ Stackup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _build_tab_stackup(self):
         w = QWidget()
         vbox = QVBoxLayout(w)
 
         self._stackup_table = QTableWidget()
-        self._stackup_table.setColumnCount(7)
+        self._stackup_table.setColumnCount(8)
         self._stackup_table.setHorizontalHeaderLabels(
-            ["Layer Name", "Thick. (µm)", "Type", "Role", "Net", "εr", "tan δ"]
+            ["Layer Name", "Thick. (um)", "Type", "Role", "Net", "er", "tan d", "Material"]
         )
         hdr = self._stackup_table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.Interactive)
@@ -467,6 +753,7 @@ class ViaWindow(QMainWindow):
         hdr.resizeSection(4, 60)
         hdr.resizeSection(5, 55)
         hdr.resizeSection(6, 55)
+        hdr.resizeSection(7, 220)
         self._stackup_table.setMinimumHeight(200)
         vbox.addWidget(self._stackup_table)
 
@@ -514,14 +801,14 @@ class ViaWindow(QMainWindow):
                     net = "PWR"
             self._stackup_insert_row(
                 row["name"], row["thickness_um"], is_copper,
-                role, net, row["er"], row["tand"]
+                role, net, row["er"], row["tand"], str(row.get("material_id", ""))
             )
         self._suppress_signals = False
         self._stackup_changed()
 
     def _stackup_insert_row(self, name: str, thick: float,
                              is_copper: bool, role: str, net: str, er: float, tand: float,
-                             at_row: Optional[int] = None):
+                             material_id: str = "", at_row: Optional[int] = None):
         tbl = self._stackup_table
         row = tbl.rowCount() if at_row is None else at_row
         tbl.insertRow(row)
@@ -535,7 +822,7 @@ class ViaWindow(QMainWindow):
         combo = QComboBox()
         combo.addItems(["Copper", "Dielectric"])
         combo.setCurrentIndex(0 if is_copper else 1)
-        combo.currentIndexChanged.connect(self._stackup_changed)
+        combo.currentIndexChanged.connect(self._on_stackup_type_changed)
         tbl.setCellWidget(row, 2, combo)
 
         role_combo = QComboBox()
@@ -556,6 +843,13 @@ class ViaWindow(QMainWindow):
         tand_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         tbl.setItem(row, 6, tand_item)
 
+        mat_combo = QComboBox()
+        self._populate_material_combo(mat_combo, is_copper, selected_id=material_id)
+        mat_combo.currentIndexChanged.connect(self._on_stackup_material_changed)
+        tbl.setCellWidget(row, 7, mat_combo)
+
+        self._apply_material_to_row(row, update_cells=not bool(material_id))
+
         # Connect item changes
         tbl.itemChanged.connect(self._stackup_changed)
 
@@ -571,6 +865,7 @@ class ViaWindow(QMainWindow):
             net_item     = tbl.item(r, 4)
             er_item      = tbl.item(r, 5)
             tand_item    = tbl.item(r, 6)
+            material_combo = tbl.cellWidget(r, 7)
 
             name  = name_item.text()  if name_item  else ""
             try:
@@ -591,21 +886,50 @@ class ViaWindow(QMainWindow):
             except ValueError:
                 tand  = 0.0
 
-            rows.append({"name": name, "thickness_um": thick,
-                         "is_copper": is_copper, "role": role_text, "net": net_text,
-                         "er": er, "tand": tand})
+            material_id = ""
+            if isinstance(material_combo, QComboBox):
+                material_id = str(material_combo.currentData() or material_combo.currentText() or "")
+
+            mat_entry = self._material_entry(material_id, is_copper)
+            rows.append({
+                "name": name,
+                "thickness_um": thick,
+                "is_copper": is_copper,
+                "role": role_text,
+                "net": net_text,
+                "er": er,
+                "tand": tand,
+                "material_id": str(mat_entry.get("id", material_id)),
+                "material_params": {
+                    "er": float(mat_entry.get("er", er)),
+                    "ur": float(mat_entry.get("ur", 1.0)),
+                    "tand": float(mat_entry.get("tand", tand)),
+                    "cond": float(mat_entry.get("cond", 0.0)),
+                    "metal": bool(mat_entry.get("metal", is_copper)),
+                    "color": str(mat_entry.get("color", "#BEBEBE")),
+                    "opacity": float(mat_entry.get("opacity", 1.0)),
+                    "source": str(mat_entry.get("source", "custom")),
+                    "library_symbol": str(mat_entry.get("library_symbol", "")),
+                },
+            })
         return rows
 
     def _copper_layer_names(self) -> list[str]:
         return [r["name"] for r in self._read_stackup() if r["is_copper"]]
 
-    def _stackup_changed(self):
+    def _stackup_changed(self, *args, rebuild_3d: bool | None = None):
         if self._suppress_signals:
             return
+        if rebuild_3d is None:
+            rebuild_3d = True
+            item = args[0] if args and isinstance(args[0], QTableWidgetItem) else None
+            if item is not None:
+                # Electrical-only edits (net, er, tanÎ´, material) do not change 3D geometry.
+                rebuild_3d = item.column() in (0, 1)
         if hasattr(self, '_via_from_combo'):
             self._update_via_layer_combos()
         self.project_modified.emit()
-        if hasattr(self, '_chk_autorefresh') and self._chk_autorefresh.isChecked() and _GL_AVAILABLE:
+        if rebuild_3d and hasattr(self, '_chk_autorefresh') and self._chk_autorefresh.isChecked() and _GL_AVAILABLE:
             self._rebuild_3d()
 
     def _stackup_add(self):
@@ -642,7 +966,7 @@ class ViaWindow(QMainWindow):
         rows[a], rows[b] = rows[b], rows[a]
         self._load_stackup_rows(rows)
 
-    # ── Tab 1 – Via Geometry ──────────────────────────────────────────────
+    # â”€â”€ Tab 1 â€“ Via Geometry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _build_tab_via_geometry(self):
         w = QWidget()
@@ -650,12 +974,17 @@ class ViaWindow(QMainWindow):
         from PySide6.QtWidgets import QFormLayout
         form = QFormLayout(form_widget)
 
-        self._drill_um   = self._mk_dspin(50,   5000,  250.0, " µm")
-        self._pad_um     = self._mk_dspin(100, 10000,  500.0, " µm")
-        self._antipad_um = self._mk_dspin(150, 20000,  800.0, " µm")
-        form.addRow("Drill diameter (µm):", self._drill_um)
-        form.addRow("Pad diameter (µm):",   self._pad_um)
-        form.addRow("Antipad diameter (µm):", self._antipad_um)
+        self._drill_um   = self._mk_dspin(50,   5000,  250.0, " um")
+        self._pad_um     = self._mk_dspin(100, 10000,  500.0, " um")
+        self._antipad_um = self._mk_dspin(150, 20000,  800.0, " um")
+        form.addRow("Drill diameter (um):", self._drill_um)
+        form.addRow("Pad diameter (um):",   self._pad_um)
+        form.addRow("Antipad diameter (um):", self._antipad_um)
+
+        self._via_material_combo = QComboBox()
+        self._populate_material_combo(self._via_material_combo, True, selected_id=self._via_material_id)
+        self._via_material_combo.currentIndexChanged.connect(self._on_via_material_changed)
+        form.addRow("Via material:", self._via_material_combo)
 
         self._via_from_combo = QComboBox()
         self._via_to_combo   = QComboBox()
@@ -676,9 +1005,9 @@ class ViaWindow(QMainWindow):
         radio_hbox.addWidget(self._radio_diff)
         form.addRow("Mode:", radio_widget)
 
-        self._diff_spacing = self._mk_dspin(100, 5000, 400.0, " µm")
+        self._diff_spacing = self._mk_dspin(100, 5000, 400.0, " um")
         self._diff_spacing.setEnabled(False)
-        form.addRow("Diff. spacing (µm):", self._diff_spacing)
+        form.addRow("Diff. spacing (um):", self._diff_spacing)
 
         vbox = QVBoxLayout(w)
         vbox.addWidget(form_widget)
@@ -775,12 +1104,12 @@ class ViaWindow(QMainWindow):
             self._param_changed()
 
     def _diff_toggled(self, checked):
-        self._diff_spacing.setEnabled(not checked)  # checked == SE → disable
+        self._diff_spacing.setEnabled(not checked)  # checked == SE â†’ disable
         if hasattr(self, "_feed_port_controls"):
             self._feed_controls_changed()
         self._param_changed()
 
-    # ── Tab 2 – Stitching ─────────────────────────────────────────────────
+    # â”€â”€ Tab 2 â€“ Stitching â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _build_tab_stitching(self):
         w = QWidget()
@@ -806,13 +1135,13 @@ class ViaWindow(QMainWindow):
         self._stitch_n.setValue(8)
         form.addRow("N vias:", self._stitch_n)
 
-        self._stitch_ring_r = self._mk_dspin(100, 20000, 2000.0, " µm")
-        form.addRow("Ring radius (µm):", self._stitch_ring_r)
+        self._stitch_ring_r = self._mk_dspin(100, 20000, 2000.0, " um")
+        form.addRow("Ring radius (um):", self._stitch_ring_r)
 
-        self._stitch_drill = self._mk_dspin(50, 5000, 250.0, " µm")
-        self._stitch_pad   = self._mk_dspin(100, 10000, 500.0, " µm")
-        form.addRow("Stitching drill (µm):", self._stitch_drill)
-        form.addRow("Stitching pad (µm):",   self._stitch_pad)
+        self._stitch_drill = self._mk_dspin(50, 5000, 250.0, " um")
+        self._stitch_pad   = self._mk_dspin(100, 10000, 500.0, " um")
+        form.addRow("Stitching drill (um):", self._stitch_drill)
+        form.addRow("Stitching pad (um):",   self._stitch_pad)
 
         vbox = QVBoxLayout(w)
         vbox.addWidget(grp)
@@ -851,7 +1180,7 @@ class ViaWindow(QMainWindow):
         self._update_via_layer_combos()
         self._refresh_stitching_coords_table()
 
-    # ── Tab 3 – Simulation ────────────────────────────────────────────────
+    # â”€â”€ Tab 3 â€“ Simulation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _build_tab_feed(self):
         w = QWidget()
@@ -875,13 +1204,13 @@ class ViaWindow(QMainWindow):
             feed_type = QComboBox()
             feed_type.addItems(["Coaxial", "Trace"])
             feed_type.setCurrentIndex(1)
-            trace_w_um = self._mk_dspin(25.0, 10000.0, 250.0, " µm")
-            trace_l_um = self._mk_dspin(50.0, 50000.0, 2000.0, " µm")
-            trace_ang_deg = self._mk_dspin(-180.0, 180.0, angle_default, "°", decimals=1)
+            trace_w_um = self._mk_dspin(25.0, 10000.0, 250.0, " um")
+            trace_l_um = self._mk_dspin(50.0, 50000.0, 2000.0, " um")
+            trace_ang_deg = self._mk_dspin(-180.0, 180.0, angle_default, " deg", decimals=1)
 
             form.addRow("Feed type:", feed_type)
-            form.addRow("Trace width (µm):", trace_w_um)
-            form.addRow("Trace length (µm):", trace_l_um)
+            form.addRow("Trace width (um):", trace_w_um)
+            form.addRow("Trace length (um):", trace_l_um)
             form.addRow("Trace angle (deg):", trace_ang_deg)
 
             self._feed_port_groups[port_idx] = grp
@@ -978,7 +1307,7 @@ class ViaWindow(QMainWindow):
             controls["trace_angle_deg"].setEnabled(port_enabled and is_trace)
         self._param_changed()
 
-    # ── Tab 4 – Simulation ────────────────────────────────────────────────
+    # â”€â”€ Tab 4 â€“ Simulation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _build_tab_simulation(self):
         w = QWidget()
@@ -1011,14 +1340,14 @@ class ViaWindow(QMainWindow):
         vbox.addStretch(1)
         self._tabs.addTab(w, "Simulation")
 
-        self._f_start.valueChanged.connect(self._param_changed)
-        self._f_stop.valueChanged.connect(self._param_changed)
-        self._n_pts.valueChanged.connect(self._param_changed)
-        self._n_workers.valueChanged.connect(self._param_changed)
+        self._f_start.valueChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
+        self._f_stop.valueChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
+        self._n_pts.valueChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
+        self._n_workers.valueChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
         self._sparam_fit_enable.toggled.connect(self._simulation_controls_changed)
-        self._sparam_fit_n_pts.valueChanged.connect(self._param_changed)
+        self._sparam_fit_n_pts.valueChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
 
-    # ── Tab 5 – Mesh ─────────────────────────────────────────────────────
+    # â”€â”€ Tab 5 â€“ Mesh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _build_tab_mesh(self):
         w = QWidget()
@@ -1076,13 +1405,13 @@ class ViaWindow(QMainWindow):
         vbox.addStretch(1)
         self._tabs.addTab(w, "Mesh")
 
-        self._res_mm.valueChanged.connect(self._param_changed)
+        self._res_mm.valueChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
         self._mesh_local_enable.toggled.connect(self._mesh_controls_changed)
         self._mesh_controls_changed()
 
     def _simulation_controls_changed(self, *args):
         self._sparam_fit_n_pts.setEnabled(self._sparam_fit_enable.isChecked())
-        self._param_changed()
+        self._param_changed(rebuild_3d=False)
 
     def _mesh_controls_changed(self, *args):
         enabled = self._mesh_local_enable.isChecked()
@@ -1092,9 +1421,9 @@ class ViaWindow(QMainWindow):
             if mesh_key in self._mesh_factor_labels:
                 self._mesh_factor_labels[mesh_key].setText(f"x{value}")
                 self._mesh_factor_labels[mesh_key].setEnabled(enabled)
-        self._param_changed()
+        self._param_changed(rebuild_3d=False)
 
-    # ── Tab 6 – Script ────────────────────────────────────────────────────
+    # â”€â”€ Tab 6 â€“ Script â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _build_tab_script(self):
         w = QWidget()
@@ -1125,7 +1454,7 @@ class ViaWindow(QMainWindow):
         self._btn_gen_script  = QPushButton("Generate Script")
         self._btn_save_script = QPushButton("Save Script...")
         self._btn_copy_script = QPushButton("Copy")
-        self._btn_run_emerge  = QPushButton("▶  Run EMerge")
+        self._btn_run_emerge  = QPushButton("Run EMerge")
         self._btn_run_emerge.setToolTip(
             "Salva lo script nella cartella <Progetto>_ViaAnalyzer ed esegue EMerge"
         )
@@ -1146,7 +1475,7 @@ class ViaWindow(QMainWindow):
         vbox.addWidget(self._output_edit, 1)
 
         # Stop button (initially hidden)
-        self._btn_stop_emerge = QPushButton("■  Stop")
+        self._btn_stop_emerge = QPushButton("Stop")
         self._btn_stop_emerge.setVisible(False)
         vbox.addWidget(self._btn_stop_emerge)
 
@@ -1157,19 +1486,19 @@ class ViaWindow(QMainWindow):
         self._btn_copy_script.clicked.connect(self._on_copy_script)
         self._btn_run_emerge.clicked.connect(self._on_run_emerge)
         self._btn_stop_emerge.clicked.connect(self._on_stop_emerge)
-        self._show_structure_in_emerge.stateChanged.connect(self._param_changed)
-        self._show_labels_in_emerge.stateChanged.connect(self._param_changed)
-        self._show_mesh_in_emerge.stateChanged.connect(self._param_changed)
+        self._show_structure_in_emerge.stateChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
+        self._show_labels_in_emerge.stateChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
+        self._show_mesh_in_emerge.stateChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
 
         self._emerge_process: QProcess | None = None
 
-    # ── Parameter-change plumbing ─────────────────────────────────────────
+    # â”€â”€ Parameter-change plumbing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    def _param_changed(self):
+    def _param_changed(self, *args, rebuild_3d: bool = True):
         if self._suppress_signals:
             return
         self.project_modified.emit()
-        if hasattr(self, "_chk_autorefresh") and self._chk_autorefresh.isChecked() and _GL_AVAILABLE:
+        if rebuild_3d and hasattr(self, "_chk_autorefresh") and self._chk_autorefresh.isChecked() and _GL_AVAILABLE:
             self._rebuild_3d()
 
     def _stitching_controls_changed(self, *args):
@@ -1240,7 +1569,7 @@ class ViaWindow(QMainWindow):
             self._stitch_deleted_indices.discard(row)
         else:
             self._stitch_deleted_indices.add(row)
-        self._param_changed()
+        self._param_changed(rebuild_3d=False)
         if _GL_AVAILABLE and self._gl_view is not None:
             self._rebuild_3d()
 
@@ -1335,7 +1664,7 @@ class ViaWindow(QMainWindow):
         half_extent_mm = max(outer_r + boundary_pad_mm, 1.5)
         return half_extent_mm, boundary_pad_mm, outer_r, dref_mm
 
-    # ── Camera helpers ────────────────────────────────────────────────────
+    # â”€â”€ Camera helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _cam_reset(self):
         if self._gl_view:
@@ -1357,8 +1686,72 @@ class ViaWindow(QMainWindow):
         self._scene_group_items = {}
         self._scene_object_items = {}
         self._scene_gl_items = {}
+        self._scene_base_alpha_by_item_id = {}
         if self._scene_tree is not None:
             self._scene_tree.clear()
+
+    def _get_mesh_item_base_alpha(self, mesh_item) -> float:
+        try:
+            color = mesh_item.opts.get("color", None)
+            if color is None:
+                return 1.0
+            if hasattr(color, "__len__") and len(color) >= 4:
+                return float(color[3])
+        except Exception:
+            pass
+        return 1.0
+
+    def _apply_scene_key_transparency(self, key: str):
+        transparency_pct = int(self._scene_transparency_pct_by_key.get(key, 0))
+        alpha_scale = max(0.0, min(1.0, 1.0 - (transparency_pct / 100.0)))
+        for gi in self._scene_gl_items.get(key, []):
+            try:
+                base_alpha = self._scene_base_alpha_by_item_id.get(id(gi), self._get_mesh_item_base_alpha(gi))
+                self._scene_base_alpha_by_item_id[id(gi)] = base_alpha
+                color = gi.opts.get("color", None)
+                if color is None or not hasattr(color, "__len__") or len(color) < 4:
+                    continue
+                new_color = list(color)
+                new_color[3] = max(0.0, min(1.0, base_alpha * alpha_scale))
+                gi.setColor(tuple(new_color))
+            except Exception:
+                continue
+
+    def _open_scene_transparency_dialog(self, key: str):
+        if not key:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Set Transparency")
+        dlg.setModal(True)
+        vbox = QVBoxLayout(dlg)
+        info = QLabel("Transparency")
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(0, 100)
+        slider.setSingleStep(1)
+        slider.setPageStep(5)
+        slider.setValue(int(self._scene_transparency_pct_by_key.get(key, 0)))
+        value_lbl = QLabel(f"{slider.value()}%")
+        value_lbl.setAlignment(Qt.AlignCenter)
+        btn_close = QPushButton("Close")
+
+        def _apply_from_slider():
+            value = int(slider.value())
+            self._scene_transparency_pct_by_key[key] = value
+            value_lbl.setText(f"{value}%")
+            self._apply_scene_key_transparency(key)
+
+        slider.valueChanged.connect(lambda v: value_lbl.setText(f"{int(v)}%"))
+        slider.sliderReleased.connect(_apply_from_slider)
+        btn_close.clicked.connect(dlg.accept)
+
+        vbox.addWidget(info)
+        vbox.addWidget(slider)
+        vbox.addWidget(value_lbl)
+        vbox.addWidget(btn_close)
+        dlg.setLayout(vbox)
+        dlg.resize(320, 120)
+        dlg.exec()
 
     def _ensure_scene_group_item(self, group_name: str) -> QTreeWidgetItem | None:
         if self._scene_tree is None:
@@ -1392,6 +1785,7 @@ class ViaWindow(QMainWindow):
             return
         self._gl_view.addItem(mesh_item)
         self._scene_gl_items.setdefault(key, []).append(mesh_item)
+        self._scene_base_alpha_by_item_id[id(mesh_item)] = self._get_mesh_item_base_alpha(mesh_item)
 
         if self._scene_tree is not None:
             if key not in self._scene_object_items:
@@ -1405,6 +1799,7 @@ class ViaWindow(QMainWindow):
                     self._scene_object_items[key] = node
 
         self._set_scene_key_visibility(key, key not in self._hidden_3d_keys)
+        self._apply_scene_key_transparency(key)
 
     def _on_scene_tree_context_menu(self, pos):
         if self._scene_tree is None:
@@ -1423,6 +1818,7 @@ class ViaWindow(QMainWindow):
             act_hide = menu.addAction("Hide")
             act_show = menu.addAction("Show")
             act_toggle = menu.addAction("Toggle")
+            act_transparency = menu.addAction("Set Transparency...")
             chosen = menu.exec(self._scene_tree.viewport().mapToGlobal(pos))
             if chosen == act_hide:
                 self._set_scene_key_visibility(key, False)
@@ -1430,6 +1826,8 @@ class ViaWindow(QMainWindow):
                 self._set_scene_key_visibility(key, True)
             elif chosen == act_toggle:
                 self._set_scene_key_visibility(key, key in self._hidden_3d_keys)
+            elif chosen == act_transparency:
+                self._open_scene_transparency_dialog(str(key))
             return
 
         if node_type == "group":
@@ -1476,7 +1874,7 @@ class ViaWindow(QMainWindow):
         palette = copper_palette if is_copper else dielectric_palette
         return palette[layer_index % len(palette)]
 
-    # ── 3-D scene builder ─────────────────────────────────────────────────
+    # â”€â”€ 3-D scene builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _rebuild_3d(self):
         if not _GL_AVAILABLE or self._gl_view is None:
@@ -1634,7 +2032,7 @@ class ViaWindow(QMainWindow):
             mesh.setGLOptions("opaque")
             self._register_scene_mesh(scene_group, scene_key, scene_label, mesh)
 
-            # On landing layers draw pad as annular cylinder (barrel_r → pad_r, layer thickness).
+            # On landing layers draw pad as annular cylinder (barrel_r â†’ pad_r, layer thickness).
             for si, r in enumerate(stackup):
                 lz0 = layer_z0[si]
                 lz1 = layer_z1[si]
@@ -1645,7 +2043,7 @@ class ViaWindow(QMainWindow):
                     layer_col = self._layer_color(si, True)
                     pad_color = (layer_col[0], min(1.0, layer_col[1] + 0.08), 0.05, 1.0)
                     if si in landing_layers:
-                        # Annular pad with full layer thickness: inner=barrel, outer=pad → no barrel overlap
+                        # Annular pad with full layer thickness: inner=barrel, outer=pad â†’ no barrel overlap
                         lh = lz1 - lz0
                         pv, pf = _annular_cyl_mesh(barrel_r, pad_radius, lh, lz0)
                         if pv is not None:
@@ -1733,7 +2131,7 @@ class ViaWindow(QMainWindow):
             stitch_z_bot = layer_z1[stitch_to_stack_idx]
             # Landing layers = top + bottom signal layers + all Plane layers in between
             # Only the top/bottom signal layers get annular pads drawn.
-            # Intermediate Plane layers connect via the drill-size hole in the plane mesh — no extra pad ring.
+            # Intermediate Plane layers connect via the drill-size hole in the plane mesh â€” no extra pad ring.
             stitch_landing_layers = {stitch_from_stack_idx, stitch_to_stack_idx}
             for i, (sx, sy) in enumerate(self._stitching_coordinates_mm()):
                 is_sel = i == self._stitch_selected_row
@@ -1757,9 +2155,9 @@ class ViaWindow(QMainWindow):
         if self._scene_tree is not None:
             self._scene_tree.expandAll()
 
-    # ── EMerge script generation ──────────────────────────────────────────
+    # â”€â”€ EMerge script generation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    # ── EMerge run helpers ────────────────────────────────────────────────
+    # â”€â”€ EMerge run helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _get_host_main_window(self):
         host = getattr(self, "_host_main_window", None)
@@ -1857,7 +2255,7 @@ class ViaWindow(QMainWindow):
         self._btn_stop_emerge.setVisible(False)
         self._output_edit.appendPlainText(
             "\n" + "=" * 60
-            + "\n[S-Params Studio] Processo terminato — exit code " + str(exit_code)
+            + "\n[S-Params Studio] Processo terminato â€” exit code " + str(exit_code)
         )
         if exit_code == 0:
             folder = getattr(self, "_emerge_folder", None)
@@ -1991,9 +2389,9 @@ class ViaWindow(QMainWindow):
                 "uy": uy,
             }
 
-        _, boundary_pad_mm, _, _ = self._simulation_domain_geometry()
+        domain_hw_mm, _, _, _ = self._simulation_domain_geometry()
 
-        # ── Copper layer index mapping ────────────────────────────────────────
+        # â”€â”€ Copper layer index mapping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         copper_layers = [(i, r) for i, r in enumerate(stackup) if r["is_copper"]]
         via_from_idx_c = self._via_from_combo.currentIndex()
         via_to_idx_c   = self._via_to_combo.currentIndex()
@@ -2013,23 +2411,55 @@ class ViaWindow(QMainWindow):
         if stitch_from_idx_c > stitch_to_idx_c:
             stitch_from_idx_c, stitch_to_idx_c = stitch_to_idx_c, stitch_from_idx_c
 
-        # ── Unique dielectric materials ───────────────────────────────────────
-        diel_map: dict[tuple, str] = {}
-        diel_vars: list[tuple] = []
+        # â”€â”€ Material selection and script bindings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        layer_material_entry_by_gi: dict[int, dict[str, object]] = {}
 
-        def _get_diel_var(er: float, tand: float) -> str:
-            key = (round(er, 6), round(tand, 6))
-            if key not in diel_map:
-                vname = f"diel_{len(diel_map)}"
-                diel_map[key] = vname
-                diel_vars.append((vname, er, tand))
-            return diel_map[key]
+        def _resolve_row_material(row: dict) -> dict[str, object]:
+            is_copper = bool(row.get("is_copper", True))
+            mat_id = str(row.get("material_id", "") or "")
+            entry = self._material_entry(mat_id, is_copper)
+            if not entry:
+                entry = self._material_entry(self._default_material_id(is_copper), is_copper)
 
-        for r in stackup:
-            if not r["is_copper"]:
-                _get_diel_var(r["er"], r["tand"])
+            resolved = dict(entry)
+            if str(resolved.get("id", "")) == _CUSTOM_DIELECTRIC_ID:
+                resolved["er"] = float(row.get("er", resolved.get("er", 4.2)))
+                resolved["tand"] = float(row.get("tand", resolved.get("tand", 0.02)))
+            return resolved
 
-        # ── Z coordinate computation (top=0, going negative) ─────────────────
+        material_key_to_var: dict[tuple, str] = {}
+        material_var_defs: list[tuple[str, dict[str, object]]] = []
+
+        def _material_key(entry: dict[str, object]) -> tuple:
+            if str(entry.get("id", "")) == _CUSTOM_DIELECTRIC_ID:
+                return (
+                    str(entry.get("id", "")),
+                    round(float(entry.get("er", 4.2)), 6),
+                    round(float(entry.get("ur", 1.0)), 6),
+                    round(float(entry.get("tand", 0.02)), 6),
+                    round(float(entry.get("cond", 0.0)), 6),
+                    bool(entry.get("metal", False)),
+                )
+            return (str(entry.get("id", "")),)
+
+        def _get_material_var(entry: dict[str, object]) -> str:
+            key = _material_key(entry)
+            if key not in material_key_to_var:
+                vname = f"mat_{len(material_key_to_var)}"
+                material_key_to_var[key] = vname
+                material_var_defs.append((vname, entry))
+            return material_key_to_var[key]
+
+        for gi, row in enumerate(stackup):
+            entry = _resolve_row_material(row)
+            layer_material_entry_by_gi[gi] = entry
+            _get_material_var(entry)
+
+        via_material_id = str(self._via_material_combo.currentData() or self._via_material_combo.currentText() or self._default_material_id(True))
+        via_material_entry = self._material_entry(via_material_id, True)
+        via_material_var = _get_material_var(via_material_entry)
+
+        # â”€â”€ Z coordinate computation (top=0, going negative) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         layer_z_mm: list[tuple[float, float]] = []   # (z_top, z_bot) per row
         _z = 0.0
         for r in stackup:
@@ -2063,7 +2493,7 @@ class ViaWindow(QMainWindow):
         # Signal layer global indices (carry the feed trace)
         signal_gi_set = {via_from_gi, via_to_gi}
 
-        # ── Physical geometry parameters (mm) ─────────────────────────────────
+        # â”€â”€ Physical geometry parameters (mm) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         drill_r_mm   = drill_um   / 2.0 / 1000.0
         pad_r_mm     = pad_um     / 2.0 / 1000.0
         antipad_r_mm = antipad_um / 2.0 / 1000.0
@@ -2101,39 +2531,37 @@ class ViaWindow(QMainWindow):
                 _math.sqrt(max(pad_r_mm * pad_r_mm - (0.5 * w_mm) * (0.5 * w_mm), 0.0)) - 0.01 * w_mm,
             )
 
-        max_trace_reach_mm = 0.0
-        for ctrl_port, feed_geom in {**entry_feed_by_control, **exit_feed_by_control}.items():
-            y_off_mm = abs(self._feed_port_center_y_mm(ctrl_port))
-            max_trace_reach_mm = max(
-                max_trace_reach_mm,
-                y_off_mm + float(feed_geom["length_mm"]) + 0.5 * float(feed_geom["width_mm"]),
-            )
-
-        # Domain half-width (mm) — must contain traces + margin
-        domain_hw_mm = max(boundary_pad_mm, max_trace_reach_mm + pad_r_mm + 0.5)
-
-        # ── Port geometry ─────────────────────────────────────────────────────
+        # â”€â”€ Port geometry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Input ports (1,2): entry layer, nearest reference below entry
+        # Lumped-port plate must sit ENTIRELY in the dielectric gap between the
+        # signal trace bottom (z_entry_bot_mm) and the top of the reference plane
+        # below it (entry_port_z_ref_mm). Including the trace thickness in the
+        # plate would make the plate overlap the trace end-face (a PEC surface),
+        # which shorts the port BC and produces ~-40 dB IL at DC.
         entry_ci = via_from[0]
         if entry_ci + 1 < len(copper_info):
             entry_port_z_ref_mm = copper_info[entry_ci + 1][3]  # z_top of layer below
         else:
             entry_port_z_ref_mm = z_entry_bot_mm
-        entry_port_h_mm = max(z_entry_top_mm - entry_port_z_ref_mm, thick_entry_mm)
-        entry_port_oz_mm = entry_port_z_ref_mm if entry_port_z_ref_mm < z_entry_top_mm else z_entry_bot_mm
+        entry_port_h_mm = max(z_entry_bot_mm - entry_port_z_ref_mm, 1e-6)
+        entry_port_oz_mm = entry_port_z_ref_mm
 
         # Output ports (3,4): exit layer, nearest reference above exit
+        # Plate spans the dielectric gap between the signal-trace TOP (z_exit_top_mm)
+        # and the BOTTOM of the reference plane above it (exit_port_z_ref_mm).
+        # See entry-port comment above for rationale.
         exit_ci = via_to[0]
         if exit_ci > 0:
             exit_port_z_ref_mm = copper_info[exit_ci - 1][4]   # z_bot of layer above
         else:
             exit_port_z_ref_mm = z_exit_top_mm
-        exit_port_h_mm = max(exit_port_z_ref_mm - z_exit_bot_mm, thick_exit_mm)
-        exit_port_oz_mm = z_exit_bot_mm
+        exit_port_h_mm = max(exit_port_z_ref_mm - z_exit_top_mm, 1e-6)
+        exit_port_oz_mm = z_exit_top_mm
 
         port_plate_by_script: dict[int, dict[str, float]] = {}
         port_width_by_script: dict[int, float] = {}
         port_height_by_script: dict[int, float] = {}
+        port_expand_mm = 0.010  # Expand port sheet by 10 um on each side.
         for ctrl_port in input_control_ports:
             script_port = control_to_script_port[ctrl_port]
             feed_geom = entry_feed_by_control[ctrl_port]
@@ -2144,9 +2572,18 @@ class ViaWindow(QMainWindow):
             )
             port_plate["oz"] = entry_port_oz_mm
             port_plate["vz"] = entry_port_h_mm
+            _u_len_mm = max(_math.hypot(float(port_plate["ux"]), float(port_plate["uy"])), 1e-12)
+            _u_ex = (float(port_plate["ux"]) / _u_len_mm) * port_expand_mm
+            _u_ey = (float(port_plate["uy"]) / _u_len_mm) * port_expand_mm
+            port_plate["ox"] = float(port_plate["ox"]) - _u_ex
+            port_plate["oy"] = float(port_plate["oy"]) - _u_ey
+            port_plate["ux"] = float(port_plate["ux"]) + 2.0 * _u_ex
+            port_plate["uy"] = float(port_plate["uy"]) + 2.0 * _u_ey
+            port_plate["oz"] = float(port_plate["oz"]) - port_expand_mm
+            port_plate["vz"] = float(port_plate["vz"]) + 2.0 * port_expand_mm
             port_plate_by_script[script_port] = port_plate
-            port_width_by_script[script_port] = float(feed_geom["width_mm"])
-            port_height_by_script[script_port] = entry_port_h_mm
+            port_width_by_script[script_port] = _u_len_mm + 2.0 * port_expand_mm
+            port_height_by_script[script_port] = entry_port_h_mm + 2.0 * port_expand_mm
 
         for ctrl_port in output_control_ports:
             script_port = control_to_script_port[ctrl_port]
@@ -2158,14 +2595,23 @@ class ViaWindow(QMainWindow):
             )
             port_plate["oz"] = exit_port_oz_mm
             port_plate["vz"] = exit_port_h_mm
+            _u_len_mm = max(_math.hypot(float(port_plate["ux"]), float(port_plate["uy"])), 1e-12)
+            _u_ex = (float(port_plate["ux"]) / _u_len_mm) * port_expand_mm
+            _u_ey = (float(port_plate["uy"]) / _u_len_mm) * port_expand_mm
+            port_plate["ox"] = float(port_plate["ox"]) - _u_ex
+            port_plate["oy"] = float(port_plate["oy"]) - _u_ey
+            port_plate["ux"] = float(port_plate["ux"]) + 2.0 * _u_ex
+            port_plate["uy"] = float(port_plate["uy"]) + 2.0 * _u_ey
+            port_plate["oz"] = float(port_plate["oz"]) - port_expand_mm
+            port_plate["vz"] = float(port_plate["vz"]) + 2.0 * port_expand_mm
             port_plate_by_script[script_port] = port_plate
-            port_width_by_script[script_port] = float(feed_geom["width_mm"])
-            port_height_by_script[script_port] = exit_port_h_mm
+            port_width_by_script[script_port] = _u_len_mm + 2.0 * port_expand_mm
+            port_height_by_script[script_port] = exit_port_h_mm + 2.0 * port_expand_mm
 
-        # ── Emit generated script ─────────────────────────────────────────────
+        # â”€â”€ Emit generated script â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         lines: list[str] = []
-        lines.append('"""EMerge via simulation script — auto-generated by S-Params Studio.')
-        lines.append('   Uses 3D primitives (Box, Cylinder) — no PCB layouter."""')
+        lines.append('"""EMerge via simulation script â€” auto-generated by S-Params Studio.')
+        lines.append('   Uses 3D primitives (Box, Cylinder) â€” no PCB layouter."""')
         lines.append("")
         lines.append("import datetime")
         lines.append("import emerge_iron")
@@ -2178,6 +2624,25 @@ class ViaWindow(QMainWindow):
         lines.append("import numpy as np")
         lines.append("import emerge as em")
         lines.append("import os, tempfile, shutil")
+        lines.append("")
+        lines.append("def _export_snp_touchstone(filename: str, freq_hz, s_params_dict: dict, z0ref=50.0, n_ports=2):")
+        lines.append("    import numpy as np")
+        lines.append("    with open(filename, 'w') as f:")
+        lines.append("        f.write(f'# HZ S RI R {z0ref}\\n')")
+        lines.append("        for i, freq in enumerate(freq_hz):")
+        lines.append("            row = [str(float(freq))]")
+        lines.append("            for j in range(1, n_ports + 1):")
+        lines.append("                for k in range(1, n_ports + 1):")
+        lines.append("                    s_val = s_params_dict.get(f'S{j}{k}', None)")
+        lines.append("                    if s_val is not None:")
+        lines.append("                        s_complex = s_val[i] if hasattr(s_val, '__getitem__') else s_val")
+        lines.append("                        row.append(str(float(np.real(s_complex))))")
+        lines.append("                        row.append(str(float(np.imag(s_complex))))")
+        lines.append("                    else:")
+        lines.append("                        row.append('0')")
+        lines.append("                        row.append('0')")
+        lines.append("            f.write(' '.join(row) + '\\n')")
+        lines.append("")
         lines.append("")
         # Derive a clean project name from the Via Analysis window name
         _raw_name = self._name_edit.text().strip() or f"Via Analysis #{self.window_number}"
@@ -2207,17 +2672,32 @@ class ViaWindow(QMainWindow):
         lines.append("mm = 0.001  # metres per mm unit")
         lines.append("")
         lines.append('m = em.Simulation(ProjectName)')
-        lines.append('m.check_version("2.5.5")')
+        lines.append('m.check_version("2.6.9")')
         lines.append("")
-        lines.append("# ── Materials ──────────────────────────────────────────────────────────────")
+        lines.append("# â”€â”€ Materials â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
 
-        for vname, er, tand in diel_vars:
-            lines.append(f'{vname} = em.Material(er={er}, tand={tand}, color="#2ca02c", opacity=0.2)')
-        if not diel_vars:
-            lines.append('diel_0 = em.Material(er=4.2, tand=0.02, color="#2ca02c", opacity=0.2)')
+        first_copper_gi = next((gi for gi, row in enumerate(stackup) if row.get("is_copper")), None)
+        if first_copper_gi is not None:
+            conductor_default_var = _get_material_var(layer_material_entry_by_gi[first_copper_gi])
+        else:
+            conductor_default_entry = self._material_entry(self._default_material_id(True), True)
+            conductor_default_var = _get_material_var(conductor_default_entry)
+
+        for vname, entry in material_var_defs:
+            source = str(entry.get("source", ""))
+            if source == "em.lib" and str(entry.get("library_symbol", "")):
+                lines.append(f"{vname} = em.lib.{entry['library_symbol']}")
+            else:
+                lines.append(
+                    f"{vname} = em.Material(name={entry.get('name', 'Custom')!r}, "
+                    f"er={float(entry.get('er', 1.0))}, ur={float(entry.get('ur', 1.0))}, "
+                    f"tand={float(entry.get('tand', 0.0))}, cond={float(entry.get('cond', 0.0))}, "
+                    f"_metal={bool(entry.get('metal', False))}, color={str(entry.get('color', '#BEBEBE'))!r}, "
+                    f"opacity={float(entry.get('opacity', 1.0))})"
+                )
 
         lines.append("")
-        lines.append("# ── Geometry parameters ──────────────────────────────────────────────────")
+        lines.append("# â”€â”€ Geometry parameters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         lines.append(f"drill_r   = {drill_r_mm:.6f} * mm  # via drill radius")
         lines.append(f"pad_r     = {pad_r_mm:.6f} * mm  # landing pad radius")
         lines.append(f"antipad_r_default = {antipad_r_mm:.6f} * mm  # default clearance (antipad) radius")
@@ -2225,7 +2705,7 @@ class ViaWindow(QMainWindow):
         lines.append(f"signal_via_centers_mm = {[(round(x, 6), round(y, 6)) for x, y in signal_via_centers_mm]}")
         lines.append(f"plane_antipad_r_mm_by_layer = {{ {', '.join(f'{gi}: {val:.6f}' for gi, val in plane_antipad_r_mm_by_gi.items())} }}")
         lines.append("")
-        lines.append("# ── Stackup layer volumes (Z=0 at top surface, going negative) ──────────")
+        lines.append("# â”€â”€ Stackup layer volumes (Z=0 at top surface, going negative) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         for i, (r, (z_top, z_bot)) in enumerate(zip(stackup, layer_z_mm)):
             gi = i
             thick = r["thickness_um"] / 1000.0
@@ -2243,7 +2723,7 @@ class ViaWindow(QMainWindow):
                     lines.append(f"    position=(-domain_hw, -domain_hw, {z_bot:.6f}*mm),")
                     lines.append(f"    alignment=em.geo.Alignment.CORNER,")
                     lines.append(f"    name=\"{vname}\")")  
-                    lines.append(f"{vname}.material = em.lib.PEC")
+                    lines.append(f"{vname}.material = {_get_material_var(layer_material_entry_by_gi[gi])}")
                     lines.append(f"_do_sig_clear = ({via_from_gi} < {gi} < {via_to_gi})")
                     lines.append(f"_do_stub_clear = ({stub_enabled} and {via_to_gi} < {gi} <= {stub_stack_idx})")
                     lines.append(f"if {gi} in plane_antipad_r_mm_by_layer and (_do_sig_clear or _do_stub_clear):")
@@ -2261,56 +2741,50 @@ class ViaWindow(QMainWindow):
                     lines.append(f"    position=(-domain_hw, -domain_hw, {z_bot:.6f}*mm),")
                     lines.append(f"    alignment=em.geo.Alignment.CORNER,")
                     lines.append(f"    name=\"{vname}\")")  
-                    lines.append(f"{vname}.material = em.lib.PEC")
+                    lines.append(f"{vname}.material = {_get_material_var(layer_material_entry_by_gi[gi])}")
                     lines.append("")
             else:
-                dv = _get_diel_var(r["er"], r["tand"])
+                diel_var = _get_material_var(layer_material_entry_by_gi[gi])
                 lines.append(f"# Dielectric layer: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
                 lines.append(f"{vname} = em.geo.Box(2*domain_hw, 2*domain_hw, {thick:.6f}*mm,")
                 lines.append(f"    position=(-domain_hw, -domain_hw, {z_bot:.6f}*mm),")
                 lines.append(f"    alignment=em.geo.Alignment.CORNER,")
                 lines.append(f"    name=\"{vname}\")")  
-                lines.append(f"{vname}.material = {dv}")
+                lines.append(f"{vname}.material = {diel_var}")
                 lines.append("")
 
-        lines.append("# ── Signal via barrel ────────────────────────────────────────────────────")
+        lines.append("# â”€â”€ Signal via barrel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         lines.append(f"# From {via_from[2]['name']} z_top={z_via_top_mm:.4f}mm  "
                      f"to {via_to[2]['name']} z_bot={z_via_bot_mm:.4f}mm")
         lines.append(f"via_barrel = em.geo.Cylinder(drill_r, {via_barrel_h_mm:.6f}*mm,")
         lines.append(f"    cs=em.GCS.displace(0, 0, {z_via_bot_mm:.6f}*mm),")
         lines.append(f"    name=\"via_barrel\")")
-        lines.append(f"via_barrel.material = em.lib.PEC")
+        lines.append(f"via_barrel.material = {via_material_var}")
         if self._radio_diff.isChecked():
             lines.append(f"via_barrel_diff = em.geo.Cylinder(drill_r, {via_barrel_h_mm:.6f}*mm,")
             lines.append(f"    cs=em.GCS.displace(0, {diff_offset_mm:.6f}*mm, {z_via_bot_mm:.6f}*mm),")
             lines.append(f"    name=\"via_barrel_diff\")")
-            lines.append("via_barrel_diff.material = em.lib.PEC")
+            lines.append(f"via_barrel_diff.material = {via_material_var}")
         if stub_enabled:
             lines.append(f"stub_barrel = em.geo.Cylinder(drill_r, {stub_h_mm:.6f}*mm,")
             lines.append(f"    cs=em.GCS.displace(0, 0, {z_stub_bot_mm:.6f}*mm),")
             lines.append(f"    name=\"stub_barrel\")")
-            lines.append("stub_barrel.material = em.lib.PEC")
+            lines.append(f"stub_barrel.material = {via_material_var}")
             if self._radio_diff.isChecked():
                 lines.append(f"stub_barrel_diff = em.geo.Cylinder(drill_r, {stub_h_mm:.6f}*mm,")
                 lines.append(f"    cs=em.GCS.displace(0, {diff_offset_mm:.6f}*mm, {z_stub_bot_mm:.6f}*mm),")
                 lines.append(f"    name=\"stub_barrel_diff\")")
-                lines.append("stub_barrel_diff.material = em.lib.PEC")
+                lines.append(f"stub_barrel_diff.material = {via_material_var}")
         lines.append("")
-        lines.append("# ── Via holes used to clear intersected dielectric layers ───────────────")
+        lines.append("# â”€â”€ Via holes used to clear intersected dielectric layers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         lines.append("_diel_via_holes = []  # (x[m], y[m], r[m], z_bot[m], z_top[m])")
         lines.append("for _vx, _vy in signal_via_centers_mm:")
         lines.append(f"    _diel_via_holes.append((_vx*mm, _vy*mm, drill_r, {z_via_bot_mm:.6f}*mm, {z_via_top_mm:.6f}*mm))")
-        if self._radio_diff.isChecked():
-            lines.append("for _vx, _vy in signal_via_centers_mm:")
-            lines.append(f"    _diel_via_holes.append((_vx*mm, (_vy + {diff_offset_mm:.6f})*mm, drill_r, {z_via_bot_mm:.6f}*mm, {z_via_top_mm:.6f}*mm))")
         if stub_enabled:
             lines.append("for _vx, _vy in signal_via_centers_mm:")
             lines.append(f"    _diel_via_holes.append((_vx*mm, _vy*mm, drill_r, {z_stub_bot_mm:.6f}*mm, {z_stub_top_mm:.6f}*mm))")
-            if self._radio_diff.isChecked():
-                lines.append("for _vx, _vy in signal_via_centers_mm:")
-                lines.append(f"    _diel_via_holes.append((_vx*mm, (_vy + {diff_offset_mm:.6f})*mm, drill_r, {z_stub_bot_mm:.6f}*mm, {z_stub_top_mm:.6f}*mm))")
         lines.append("")
-        lines.append("# ── Entry feed geometry (inputs) ─────────────────────────────────────────")
+        lines.append("# â”€â”€ Entry feed geometry (inputs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         lines.append(f"# Layer: {via_from[2]['name']} (ports 1,2 in differential mode)")
         entry_script_ports = [control_to_script_port[p] for p in input_control_ports]
         for ctrl_port in input_control_ports:
@@ -2319,7 +2793,7 @@ class ViaWindow(QMainWindow):
             y_off = self._feed_port_center_y_mm(ctrl_port)
             feed_name = f"trace_port{script_port}"
             lines.append(
-                f"# Port {script_port} input feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f}°, y={y_off:.6f}mm"
+                f"# Port {script_port} input feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f}Â°, y={y_off:.6f}mm"
             )
             if str(geom["kind"]) == "trace":
                 lines.append(
@@ -2330,21 +2804,21 @@ class ViaWindow(QMainWindow):
                 )
                 lines.append("    alignment=em.geo.Alignment.CORNER,")
                 lines.append(f"    name=\"{feed_name}\")")
-                lines.append(f"{feed_name}.material = em.lib.PEC")
+                lines.append(f"{feed_name}.material = {conductor_default_var}")
                 if abs(float(geom["angle_deg"]) % 360) > 0.1:
                     lines.append(f"{feed_name} = em.geo.rotate({feed_name}, c0=(0, {y_off:.6f}*mm, 0),")
                     lines.append(f"    ax=(0, 0, 1), angle={float(geom['angle_deg']):.4f})")
             else:
                 coax_r_start_mm = max(drill_r_mm * 0.65, 0.03)
-                coax_h_start_mm = max(0.4, 0.35 * (layer_z_mm[-1][0] - layer_z_mm[0][1]))
+                coax_h_start_mm = max(0.4, 0.35 * (layer_z_mm[0][0] - layer_z_mm[-1][1]))
                 lines.append(f"{feed_name} = em.geo.Cylinder({coax_r_start_mm:.6f}*mm, {coax_h_start_mm:.6f}*mm,")
                 lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_entry_top_mm:.6f}*mm),")
                 lines.append(f"    name=\"{feed_name}\")")
-                lines.append(f"{feed_name}.material = em.lib.PEC")
+                lines.append(f"{feed_name}.material = {conductor_default_var}")
             lines.append(f"_pad_p{script_port} = em.geo.Cylinder(pad_r, {thick_entry_mm:.6f}*mm,")
             lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_entry_bot_mm:.6f}*mm),")
             lines.append(f"    name=\"entry_pad_p{script_port}\")")
-            lines.append(f"_pad_p{script_port}.material = em.lib.PEC")
+            lines.append(f"_pad_p{script_port}.material = {conductor_default_var}")
             lines.append(f"{feed_name} = em.geo.add({feed_name}, _pad_p{script_port})")
 
         lines.append(f"trace_start = trace_port{entry_script_ports[0]}")
@@ -2352,7 +2826,7 @@ class ViaWindow(QMainWindow):
             lines.append(f"trace_start = em.geo.add(trace_start, trace_port{script_port})")
 
         lines.append("")
-        lines.append("# ── Exit feed geometry (outputs) ─────────────────────────────────────────")
+        lines.append("# â”€â”€ Exit feed geometry (outputs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         lines.append(f"# Layer: {via_to[2]['name']} (ports 3,4 in differential mode)")
         exit_script_ports = [control_to_script_port[p] for p in output_control_ports]
         for ctrl_port in output_control_ports:
@@ -2361,7 +2835,7 @@ class ViaWindow(QMainWindow):
             y_off = self._feed_port_center_y_mm(ctrl_port)
             feed_name = f"trace_port{script_port}"
             lines.append(
-                f"# Port {script_port} output feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f}°, y={y_off:.6f}mm"
+                f"# Port {script_port} output feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f}Â°, y={y_off:.6f}mm"
             )
             if str(geom["kind"]) == "trace":
                 lines.append(
@@ -2372,21 +2846,21 @@ class ViaWindow(QMainWindow):
                 )
                 lines.append("    alignment=em.geo.Alignment.CORNER,")
                 lines.append(f"    name=\"{feed_name}\")")
-                lines.append(f"{feed_name}.material = em.lib.PEC")
+                lines.append(f"{feed_name}.material = {conductor_default_var}")
                 if abs(float(geom["angle_deg"]) % 360) > 0.1:
                     lines.append(f"{feed_name} = em.geo.rotate({feed_name}, c0=(0, {y_off:.6f}*mm, 0),")
                     lines.append(f"    ax=(0, 0, 1), angle={float(geom['angle_deg']):.4f})")
             else:
                 coax_r_end_mm = max(drill_r_mm * 0.65, 0.03)
-                coax_h_end_mm = max(0.4, 0.35 * (layer_z_mm[-1][0] - layer_z_mm[0][1]))
+                coax_h_end_mm = max(0.4, 0.35 * (layer_z_mm[0][0] - layer_z_mm[-1][1]))
                 lines.append(f"{feed_name} = em.geo.Cylinder({coax_r_end_mm:.6f}*mm, {coax_h_end_mm:.6f}*mm,")
                 lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_exit_top_mm:.6f}*mm),")
                 lines.append(f"    name=\"{feed_name}\")")
-                lines.append(f"{feed_name}.material = em.lib.PEC")
+                lines.append(f"{feed_name}.material = {conductor_default_var}")
             lines.append(f"_pad_p{script_port} = em.geo.Cylinder(pad_r, {thick_exit_mm:.6f}*mm,")
             lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_exit_bot_mm:.6f}*mm),")
             lines.append(f"    name=\"exit_pad_p{script_port}\")")
-            lines.append(f"_pad_p{script_port}.material = em.lib.PEC")
+            lines.append(f"_pad_p{script_port}.material = {conductor_default_var}")
             lines.append(f"{feed_name} = em.geo.add({feed_name}, _pad_p{script_port})")
 
         lines.append(f"trace_end = trace_port{exit_script_ports[0]}")
@@ -2405,7 +2879,7 @@ class ViaWindow(QMainWindow):
             s_h_mm = z_s_top_mm - z_s_bot_mm
             s_from_th_mm = stackup[s_from_gi]["thickness_um"] / 1000.0
             s_to_th_mm = stackup[s_to_gi]["thickness_um"] / 1000.0
-            lines.append("# ── Stitching vias ───────────────────────────────────────────────────────")
+            lines.append("# â”€â”€ Stitching vias â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
             lines.append(f"# Pattern: {self._stitch_pattern.currentText()}, "
                          f"N={len(stitch_coords)} vias")
             lines.append(f"_s_drill_r = {s_drill_r_mm:.6f} * mm")
@@ -2420,22 +2894,22 @@ class ViaWindow(QMainWindow):
             lines.append("    _sv = em.geo.Cylinder(_s_drill_r, _s_h,")
             lines.append("        cs=em.GCS.displace(_sx*mm, _sy*mm, _s_z_bot),")
             lines.append('        name=f"stitch_{_si}_barrel")')
-            lines.append("    _sv.material = em.lib.PEC")
+            lines.append(f"    _sv.material = {via_material_var}")
             lines.append("    _diel_via_holes.append((_sx*mm, _sy*mm, _s_drill_r, _s_z_bot, _s_z_bot + _s_h))")
-            lines.append(f"    # Annular pad on start layer (pad_r ring minus drill hole — no overlap with barrel)")
+            lines.append(f"    # Annular pad on start layer (pad_r ring minus drill hole â€” no overlap with barrel)")
             lines.append(f"    _spad_from = em.geo.Cylinder(_s_pad_r, {s_from_th_mm:.6f}*mm,")
             lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_from_gi][1]:.6f}*mm),")
             lines.append('        name=f"stitch_{_si}_pad_from")')
-            lines.append("    _spad_from.material = em.lib.PEC")
+            lines.append(f"    _spad_from.material = {conductor_default_var}")
             lines.append(f"    _spad_from_hole = em.geo.Cylinder(_s_drill_r, {s_from_th_mm:.6f}*mm,")
             lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_from_gi][1]:.6f}*mm),")
             lines.append('        name=f"stitch_{_si}_pad_from_hole")')
             lines.append("    _spad_from = em.geo.subtract(_spad_from, _spad_from_hole)")
-            lines.append(f"    # Annular pad on end layer (pad_r ring minus drill hole — no overlap with barrel)")
+            lines.append(f"    # Annular pad on end layer (pad_r ring minus drill hole â€” no overlap with barrel)")
             lines.append(f"    _spad_to = em.geo.Cylinder(_s_pad_r, {s_to_th_mm:.6f}*mm,")
             lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_to_gi][1]:.6f}*mm),")
             lines.append('        name=f"stitch_{_si}_pad_to")')
-            lines.append("    _spad_to.material = em.lib.PEC")
+            lines.append(f"    _spad_to.material = {conductor_default_var}")
             lines.append(f"    _spad_to_hole = em.geo.Cylinder(_s_drill_r, {s_to_th_mm:.6f}*mm,")
             lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_to_gi][1]:.6f}*mm),")
             lines.append('        name=f"stitch_{_si}_pad_to_hole")')
@@ -2443,8 +2917,8 @@ class ViaWindow(QMainWindow):
             lines.append("")
             lines.append("# Stitching barrel clearances on all crossed copper layers")
             lines.append("# All layers (Plane and Signal): subtract drill-size cylinder so barrel fits flush.")
-            lines.append("# Plane layers → barrel surface touches plane copper = electrically connected.")
-            lines.append("# Signal layers → drill-hole only, no antipad, no intersection.")
+            lines.append("# Plane layers â†’ barrel surface touches plane copper = electrically connected.")
+            lines.append("# Signal layers â†’ drill-hole only, no antipad, no intersection.")
             for gi, row in enumerate(stackup):
                 if not row.get("is_copper"):
                     continue
@@ -2460,8 +2934,7 @@ class ViaWindow(QMainWindow):
                 lines.append(f'        name=f"layer_{gi}_stitch_{{_si}}_drill_clear")')
                 lines.append(f"    layer_{gi} = em.geo.subtract(layer_{gi}, _sdh)")
             lines.append("")
-
-        lines.append("# ── Dielectric clearances for all crossing vias ─────────────────────────")
+        lines.append("# â”€â”€ Dielectric clearances for all crossing vias â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         for gi, row in enumerate(stackup):
             if row.get("is_copper"):
                 continue
@@ -2476,7 +2949,7 @@ class ViaWindow(QMainWindow):
             lines.append(f"        layer_{gi} = em.geo.subtract(layer_{gi}, _dh)")
             lines.append("")
 
-        lines.append("# ── Non-plane copper clearances for crossing vias ───────────────────────")
+        lines.append("# â”€â”€ Non-plane copper clearances for crossing vias â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         for gi, row in enumerate(stackup):
             if not row.get("is_copper"):
                 continue
@@ -2495,15 +2968,15 @@ class ViaWindow(QMainWindow):
             lines.append(f"        layer_{gi} = em.geo.subtract(layer_{gi}, _ch)")
             lines.append("")
 
-        lines.append("# ── Lumped port sheets ───────────────────────────────────────────────────")
+        lines.append("# â”€â”€ Lumped port sheets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         lines.append("# Port sheet = 2D Plate at the far end of each trace.")
         lines.append("# Width = trace width, Height = distance to nearest reference plane.")
-        lines.append("# direction=(0,0,1) = E-field vertical (GND→signal).")
+        lines.append("# direction=(0,0,1) = E-field vertical (GNDâ†’signal).")
         for script_port in active_script_ports:
             plate = port_plate_by_script[script_port]
             role_txt = "input" if script_port in (1, 2) and is_diff_mode else ("output" if script_port in (3, 4) else ("input" if script_port == 1 else "output"))
             lines.append(
-                f"# Port {script_port} ({role_txt}): far end of feed trace — height={port_height_by_script[script_port]:.4f}mm"
+                f"# Port {script_port} ({role_txt}): far end of feed trace â€” height={port_height_by_script[script_port]:.4f}mm"
             )
             lines.append(f"port{script_port}_sheet = em.geo.Plate(")
             lines.append(f"    ({plate['ox']:.6f}*mm, {plate['oy']:.6f}*mm, {plate['oz']:.6f}*mm),")
@@ -2511,7 +2984,7 @@ class ViaWindow(QMainWindow):
             lines.append(f"    (0, 0, {plate['vz']:.6f}*mm),")
             lines.append(f"    name=\"port{script_port}_sheet\")")
 
-        lines.append("# ── Geometry finalisation ────────────────────────────────────────────────")
+        lines.append("# â”€â”€ Geometry finalisation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         lines.append("# Open region (1mm padding around structure)")
         lines.append("air = em.geo.open_region(1*mm, 1*mm, 1*mm)")
         lines.append("")
@@ -2522,10 +2995,10 @@ class ViaWindow(QMainWindow):
             else:
                 lines.append("m.view()")
         lines.append("")
-        lines.append("# ── Simulation setup ─────────────────────────────────────────────────────")
+        lines.append("# â”€â”€ Simulation setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         lines.append(f"m.mw.set_frequency_range({f_start:.4f}e9, {f_stop:.4f}e9, {n_pts})")
         lines.append("")
-        lines.append("# ── Mesh ─────────────────────────────────────────────────────────────────")
+        lines.append("# â”€â”€ Mesh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         lines.append(f"m.mw.set_resolution({mesh_resolution:.3f})  # fraction of max wavelength")
         lines.append("m.settings.safe_mode = True")
         lines.append(f"mesh_local_enabled = {mesh_local_enabled}")
@@ -2557,57 +3030,60 @@ class ViaWindow(QMainWindow):
             if row.get("is_copper") and str(row.get("role", "Signal")) == "Plane":
                 lines.append(f"        m.mesher.set_boundary_size(layer_{li}, _plane_size)")
         if self._stitch_enable.isChecked():
-            lines.append("        if 'stitch_group' in locals():")
-            lines.append("            m.mesher.set_boundary_size(stitch_group, _stitch_size)")
+            lines.append("        _stitch_group = locals().get('stitch_group', None)")
+            lines.append("        if _stitch_group is not None:")
+            lines.append("            m.mesher.set_boundary_size(_stitch_group, _stitch_size)")
         lines.append("    except Exception as _mesh_err:")
         lines.append("        print(f'Local mesh refinement skipped: {_mesh_err}')")
         lines.append("")
         lines.append("")
         lines.append("")
         lines.append("")
-        lines.append("# ── Lumped ports ─────────────────────────────────────────────────────────")
+        lines.append("# â”€â”€ Lumped ports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         if is_diff_mode:
             lines.append("# Differential numbering: ports 1,2 = inputs on entry layer; ports 3,4 = outputs on exit layer.")
         else:
             lines.append("# Single-ended numbering: port 1 = input on entry layer; port 2 = output on exit layer.")
         for script_port in active_script_ports:
+            is_exit = script_port in exit_script_ports
+            dir_z = -1 if is_exit else 1
             lines.append(f"p{script_port} = m.mw.bc.LumpedPort(port{script_port}_sheet, {script_port},")
             lines.append(
                 f"    width={port_width_by_script[script_port]:.6f}*mm, height={port_height_by_script[script_port]:.6f}*mm,"
             )
-            lines.append("    direction=(0, 0, 1))")
+            lines.append(f"    direction=(0, 0, {dir_z}))")
             lines.append("")
         lines.append("m.generate_mesh()")
         if show_mesh_in_emerge:
             lines.append("m.view(plot_mesh=True)")
         lines.append("")
-        lines.append("# ── Simulation ───────────────────────────────────────────────────────────")
+        lines.append("# â”€â”€ Simulation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         lines.append(f"data = m.mw.run_sweep(False, n_workers={n_workers})")
         lines.append("m.save()")
         lines.append("")
         lines.append("ResultTimeCode = datetime.datetime.now().strftime(\"%Y%m%d-%H%M%S\")")
         lines.append(f"sparam_fit_enabled = {sparam_fit_enabled}")
         lines.append(f"sparam_fit_points = {sparam_fit_n_pts}")
+        _n_ports = len(active_script_ports)
+        _ts_ext = f"s{_n_ports}p"
         lines.append("if sparam_fit_enabled:")
         lines.append("    try:")
         lines.append("        _fit_freq = data.scalar.grid.dense_f(int(max(3, sparam_fit_points)))")
-        lines.append("        _fit_export = {'freq_hz': np.asarray(_fit_freq)}")
+        lines.append("        _fit_export = {}")
         lines.append(f"        for _i in range(1, {len(active_script_ports) + 1}):")
         lines.append(f"            for _j in range(1, {len(active_script_ports) + 1}):")
         lines.append("                _fit_export[f'S{_i}{_j}'] = data.scalar.grid.model_S(_i, _j, _fit_freq)")
-        lines.append("        _fit_path = os.path.join(currDir, f\"{ProjectName}_{ResultTimeCode}_fit.npz\")")
-        lines.append("        np.savez(_fit_path, **_fit_export)")
+        lines.append(f"        _fit_path = os.path.join(currDir, f\"{{ProjectName}}_{{ResultTimeCode}}_fit.{_ts_ext}\")")
+        lines.append(f"        _export_snp_touchstone(_fit_path, _fit_freq, _fit_export, z0ref=50.0, n_ports={len(active_script_ports)})")
         lines.append("        print(f'Fitted S-parameters saved to: {_fit_path}')")
         lines.append("    except Exception as _fit_err:")
         lines.append("        print(f'S-parameter fitting skipped: {_fit_err}')")
-        lines.append("")
-        _n_ports = len(active_script_ports)
-        _ts_ext = f"s{_n_ports}p"
-        lines.append("data.scalar.grid.export_touchstone(")
-        lines.append(f"    os.path.join(currDir, f\"{{ProjectName}}_{{ResultTimeCode}}.{_ts_ext}\"),")
-        lines.append("    Z0ref=50, format=\"RI\",")
-        lines.append("    custom_comments=[ProjectName, \"SP Studio\"],")
-        lines.append("    funit=\"HZ\")")
+        lines.append("else:")
+        lines.append("    data.scalar.grid.export_touchstone(")
+        lines.append(f"        os.path.join(currDir, f\"{{ProjectName}}_{{ResultTimeCode}}.{_ts_ext}\"),")
+        lines.append("        Z0ref=50, format=\"RI\",")
+        lines.append("        custom_comments=[ProjectName, \"SP Studio\"],")
+        lines.append("        funit=\"HZ\")")
         lines.append("print(f\"Done. Results saved to: {currDir}\")")
         lines.append("")
 
@@ -2615,6 +3091,7 @@ class ViaWindow(QMainWindow):
 
 
 
+        lines = [line.encode("ascii", "ignore").decode("ascii") for line in lines]
         return "\n".join(lines)
 
     def _on_gen_script(self):
@@ -2636,7 +3113,7 @@ class ViaWindow(QMainWindow):
         if clip:
             clip.setText(self._script_edit.toPlainText())
 
-    # ── State serialisation ───────────────────────────────────────────────
+    # â”€â”€ State serialisation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def export_project_state(self) -> dict:
         stackup = self._read_stackup()
@@ -2667,6 +3144,8 @@ class ViaWindow(QMainWindow):
                 "stub_idx":       stub_idx,
                 "is_differential": self._radio_diff.isChecked(),
                 "diff_spacing_um": self._diff_spacing.value(),
+                "material_id": str(self._via_material_combo.currentData() or self._via_material_combo.currentText() or self._default_material_id(True)),
+                "material_params": dict(self._material_entry(str(self._via_material_combo.currentData() or self._via_material_combo.currentText() or self._default_material_id(True)), True)),
             },
             "stitching": {
                 "enabled":       self._stitch_enable.isChecked(),
@@ -2680,31 +3159,6 @@ class ViaWindow(QMainWindow):
                 "pad_um":        self._stitch_pad.value(),
             },
             "feed": {
-                "ports": {
-                    "1": self._get_feed_port_config(1),
-                    "2": self._get_feed_port_config(2),
-                    "3": self._get_feed_port_config(3),
-                    "4": self._get_feed_port_config(4),
-                },
-                "start": {
-                    "type": self._feed_start_type.currentText(),
-                    "trace_width_um": self._feed_start_trace_width_um.value(),
-                    "trace_length_um": self._feed_start_trace_length_um.value(),
-                    "trace_angle_deg": self._feed_start_trace_angle_deg.value(),
-                },
-                "end": {
-                    "type": self._feed_end_type.currentText(),
-                    "trace_width_um": self._feed_end_trace_width_um.value(),
-                    "trace_length_um": self._feed_end_trace_length_um.value(),
-                    "trace_angle_deg": self._feed_end_trace_angle_deg.value(),
-                },
-            },
-            "simulation": {
-                "f_start_ghz": self._f_start.value(),
-                "f_stop_ghz":  self._f_stop.value(),
-                "n_pts":       self._n_pts.value(),
-                "resolution_mm": self._res_mm.value(),
-                "mesh_local_enabled": self._mesh_local_enable.isChecked(),
                 "mesh_div_via": self._mesh_factor_sliders["via"].value(),
                 "mesh_div_ports": self._mesh_factor_sliders["ports"].value(),
                 "mesh_div_feed": self._mesh_factor_sliders["feed"].value(),
@@ -2756,12 +3210,23 @@ class ViaWindow(QMainWindow):
                         row_copy["net"] = ""
                 else:
                     row_copy["net"] = ""
+            if not row_copy.get("material_id"):
+                row_copy["material_id"] = self._default_material_id(bool(row_copy.get("is_copper", True)))
             normalized_stackup.append(row_copy)
         self._load_stackup_rows(normalized_stackup)
 
         self._drill_um.setValue(  via.get("drill_um",   250.0))
         self._pad_um.setValue(    via.get("pad_um",     500.0))
         self._antipad_um.setValue(via.get("antipad_um", 800.0))
+
+        via_material_id = str(via.get("material_id", self._default_material_id(True)))
+        if hasattr(self, "_via_material_combo"):
+            idx = self._via_material_combo.findData(via_material_id)
+            if idx >= 0:
+                self._via_material_combo.setCurrentIndex(idx)
+            self._via_material_id = str(self._via_material_combo.currentData() or self._via_material_combo.currentText() or via_material_id)
+        else:
+            self._via_material_id = via_material_id
 
         self._update_via_layer_combos()
 
@@ -2824,7 +3289,7 @@ class ViaWindow(QMainWindow):
         port4_feed = feed_ports.get("4", end_feed)
 
         # Backward compatibility: legacy files only had start/end groups.
-        # In that case, mirror start→port2 and end→port4 when missing.
+        # In that case, mirror startâ†’port2 and endâ†’port4 when missing.
         if "2" not in feed_ports:
             port2_feed = dict(start_feed if is_diff else end_feed)
         if "4" not in feed_ports:
@@ -2888,7 +3353,7 @@ class ViaWindow(QMainWindow):
         if _GL_AVAILABLE:
             self._rebuild_3d()
 
-    # ── Utility ───────────────────────────────────────────────────────────
+    # â”€â”€ Utility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @staticmethod
     def _mk_dspin(lo: float, hi: float, val: float,
@@ -2900,3 +3365,4 @@ class ViaWindow(QMainWindow):
         if suffix:
             sb.setSuffix(suffix)
         return sb
+

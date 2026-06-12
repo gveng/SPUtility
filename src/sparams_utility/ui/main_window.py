@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QScrollArea,
     QStyle,
     QTextBrowser,
@@ -112,6 +113,12 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(tree_panel)
 
+        self._status_progress = QProgressBar(self)
+        self._status_progress.setVisible(False)
+        self._status_progress.setMinimumWidth(220)
+        self._status_progress.setTextVisible(True)
+        self.statusBar().addPermanentWidget(self._status_progress, 1)
+
         # ── File ──────────────────────────────────────────────────────────
         file_menu = self.menuBar().addMenu("File")
         file_menu.addAction("New Project", self._new_project)
@@ -174,6 +181,40 @@ class MainWindow(QMainWindow):
         self._rebuild_tables_menu()
         self._on_active_widget_changed(None)
         self._refresh_project_tree()
+
+    def _begin_status_progress(self, message: str, maximum: int | None = None) -> None:
+        bar = getattr(self, "_status_progress", None)
+        if bar is None:
+            return
+        if maximum is None or maximum <= 0:
+            bar.setRange(0, 0)
+        else:
+            bar.setRange(0, maximum)
+            bar.setValue(0)
+        bar.setVisible(True)
+        self.statusBar().showMessage(message)
+        QApplication.processEvents()
+
+    def _update_status_progress(self, value: int, message: str | None = None) -> None:
+        bar = getattr(self, "_status_progress", None)
+        if bar is None:
+            return
+        if bar.maximum() > 0:
+            bar.setValue(max(bar.minimum(), min(value, bar.maximum())))
+        if message:
+            self.statusBar().showMessage(message)
+        QApplication.processEvents()
+
+    def _end_status_progress(self, message: str | None = None, timeout_ms: int = 4000) -> None:
+        bar = getattr(self, "_status_progress", None)
+        if bar is None:
+            return
+        bar.setVisible(False)
+        if message is None:
+            self.statusBar().clearMessage()
+        else:
+            self.statusBar().showMessage(message, timeout_ms)
+        QApplication.processEvents()
 
     def _project_tree_project_label(self) -> str:
         if self._project_path:
@@ -1857,7 +1898,15 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
-        added_count, errors = self._state.load_files(files)
+        self._begin_status_progress(f"Loading {len(files)} Touchstone file(s)...", maximum=max(1, len(files)))
+        added_count = 0
+        errors: list[str] = []
+        for idx, file_path in enumerate(files, start=1):
+            added, file_errors = self._state.load_files([file_path])
+            added_count += added
+            errors.extend(file_errors)
+            self._update_status_progress(idx, f"Loaded {idx}/{len(files)} Touchstone file(s)...")
+        self._end_status_progress(f"Loaded {len(files)} Touchstone file(s).")
 
         if errors:
             QMessageBox.warning(self, "Load errors", "\n".join(errors))
@@ -1878,8 +1927,7 @@ class MainWindow(QMainWindow):
             self,
             "Open Touchstone file",
             "",
-            "Touchstone (*.s1p *.s2p *.s3p *.s4p *.s5p *.s6p *.s7p *.s8p *.s9p"
-            " *.s10p *.s12p *.s16p *.ts);;All files (*)",
+            "Touchstone (*.s*p *.ts);;All files (*)",
         )
         if not files:
             return
@@ -2702,11 +2750,25 @@ class MainWindow(QMainWindow):
 
         self._reset_project_workspace()
 
-        _, errors = self._state.load_files(file_paths)
+        planned_restore = sum(
+            1
+            for kind in ("sp", "tdr", "circuit")
+            for entry in (payload.get("window_registry", {}) or {}).get(kind, [])
+            if isinstance(entry, dict) and bool(entry.get("is_open", False))
+        )
+        total_steps = max(1, len(file_paths) + planned_restore + 1)
+        self._begin_status_progress("Loading project files...", maximum=total_steps)
+
+        errors: list[str] = []
+        for idx, path in enumerate(file_paths, start=1):
+            _, file_errors = self._state.load_files([path])
+            errors.extend(file_errors)
+            self._update_status_progress(idx, f"Loaded {idx}/{len(file_paths)} project file(s)...")
 
         restored_plot = 0
         restored_tdr = 0
         restored_circuit = 0
+        progress_step = len(file_paths)
 
         registry = payload.get("window_registry")
         if isinstance(registry, dict):
@@ -2724,7 +2786,7 @@ class MainWindow(QMainWindow):
                         "title": str(item.get("title", "Window")),
                         "state": dict(item.get("state", {})) if isinstance(item.get("state"), dict) else {},
                         "window_number": int(item.get("window_number", 0)),
-                        "is_open": bool(item.get("is_open", False)),
+                        "is_open": bool(item.get("is_open", False)) if kind != "via" else False,
                         "window_size": item.get("window_size"),
                         "eye_file": item.get("eye_file"),
                         "sparam_file": item.get("sparam_file"),
@@ -2735,10 +2797,12 @@ class MainWindow(QMainWindow):
                         "parent_circuit_entry_id": item.get("parent_circuit_entry_id"),
                     }
 
-            for kind in ("sp", "tdr", "circuit", "via"):
+            for kind in ("sp", "tdr", "circuit"):
                 for entry_id, entry in self._window_registry[kind].items():
                     if bool(entry.get("is_open", False)):
                         self._activate_or_open_window_entry(kind, entry_id)
+                        progress_step += 1
+                        self._update_status_progress(progress_step, f"Restored {progress_step - len(file_paths)}/{planned_restore} window(s)...")
 
             restored_plot = sum(1 for e in self._window_registry["sp"].values() if bool(e.get("is_open", False)))
             restored_tdr = sum(1 for e in self._window_registry["tdr"].values() if bool(e.get("is_open", False)))
@@ -2807,6 +2871,8 @@ class MainWindow(QMainWindow):
                 self._bind_open_window("circuit", entry_id, circuit_win)
                 self._windows.present(circuit_win)
                 restored_circuit += 1
+                progress_step += 1
+                self._update_status_progress(progress_step, f"Restored {progress_step - len(file_paths)}/{planned_restore} window(s)...")
 
         if errors:
             QMessageBox.warning(
@@ -2836,6 +2902,7 @@ class MainWindow(QMainWindow):
                 "html": str(item.get("html", "")),
             }
 
+        self._end_status_progress("Project loaded.")
         self._refresh_project_tree()
 
     # ── Tables menu ───────────────────────────────────────────────────────
@@ -2932,6 +2999,7 @@ class MainWindow(QMainWindow):
         self._refresh_project_tree()
 
     def _open_via_window(self) -> None:
+        self._begin_status_progress("Opening Via Analysis...")
         self._via_counter += 1
         via_win = ViaWindow(window_number=self._via_counter)
         via_win.project_modified.connect(self._mark_project_dirty)
@@ -2942,6 +3010,7 @@ class MainWindow(QMainWindow):
         self._windows.present(via_win)
         self._mark_project_dirty()
         self._refresh_project_tree()
+        self._end_status_progress("Via Analysis ready.")
 
     def _on_via_simulation_completed(self, result_path: str) -> None:
         """Called when an EMerge simulation finishes successfully.
@@ -2956,6 +3025,7 @@ class MainWindow(QMainWindow):
         self._open_plot_window()
 
     def _open_circuit_window(self) -> None:
+        self._begin_status_progress("Opening Circuit Composer...")
         circuit_number = self._next_available_circuit_number()
         self._circuit_counter = max(self._circuit_counter, circuit_number)
         circuit_win = CircuitWindow(self._state, window_number=circuit_number)
@@ -2966,6 +3036,7 @@ class MainWindow(QMainWindow):
         self._windows.present(circuit_win)
         self._mark_project_dirty()
         self._refresh_project_tree()
+        self._end_status_progress("Circuit Composer ready.")
 
     def _next_available_circuit_number(self) -> int:
         used_numbers: set[int] = set()
