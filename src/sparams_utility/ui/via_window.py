@@ -1443,6 +1443,22 @@ class ViaWindow(QMainWindow):
         options_row.addStretch(1)
         vbox.addLayout(options_row)
 
+        # EMerge version-check policy for the generated script.
+        version_row = QHBoxLayout()
+        version_row.addWidget(QLabel("EMerge version check:"))
+        self._emerge_version_check_mode = QComboBox()
+        self._emerge_version_check_mode.addItem("Strict (raise on mismatch)", "strict")
+        self._emerge_version_check_mode.addItem("Warn only (log, keep running)", "warn")
+        self._emerge_version_check_mode.addItem("Skip (omit call)", "skip")
+        self._emerge_version_check_mode.setCurrentIndex(1)
+        self._emerge_version_check_mode.setToolTip(
+            "How the generated script should react if the installed EMerge runtime "
+            "differs (major.minor) from the version it was generated against."
+        )
+        version_row.addWidget(self._emerge_version_check_mode)
+        version_row.addStretch(1)
+        vbox.addLayout(version_row)
+
         self._script_edit = QPlainTextEdit()
         self._script_edit.setReadOnly(True)
         mono = QFont("Courier New", 9)
@@ -1458,8 +1474,13 @@ class ViaWindow(QMainWindow):
         self._btn_run_emerge.setToolTip(
             "Salva lo script nella cartella <Progetto>_ViaAnalyzer ed esegue EMerge"
         )
+        self._btn_pick_python = QPushButton("Python…")
+        self._btn_pick_python.setToolTip(
+            "Seleziona l'interprete Python (con EMerge installato) usato per eseguire lo script.\n"
+            "Necessario quando l'app gira come eseguibile congelato (PyInstaller)."
+        )
         for b in (self._btn_gen_script, self._btn_save_script,
-                  self._btn_copy_script, self._btn_run_emerge):
+                  self._btn_copy_script, self._btn_run_emerge, self._btn_pick_python):
             btn_row.addWidget(b)
         btn_row.addStretch(1)
         vbox.addLayout(btn_row)
@@ -1485,12 +1506,15 @@ class ViaWindow(QMainWindow):
         self._btn_save_script.clicked.connect(self._on_save_script)
         self._btn_copy_script.clicked.connect(self._on_copy_script)
         self._btn_run_emerge.clicked.connect(self._on_run_emerge)
+        self._btn_pick_python.clicked.connect(self._on_pick_python_interpreter)
         self._btn_stop_emerge.clicked.connect(self._on_stop_emerge)
         self._show_structure_in_emerge.stateChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
         self._show_labels_in_emerge.stateChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
         self._show_mesh_in_emerge.stateChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
+        self._emerge_version_check_mode.currentIndexChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
 
         self._emerge_process: QProcess | None = None
+        self._python_interpreter_path: str = ""
 
     # â”€â”€ Parameter-change plumbing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -2207,6 +2231,54 @@ class ViaWindow(QMainWindow):
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
+    def _resolve_python_interpreter(self) -> tuple[str, list[str]] | None:
+        """Return (program, prefix_args) for launching an EMerge script.
+
+        Prefix args are passed before the script path. Handles the PyInstaller
+        frozen case where ``sys.executable`` points to the app itself.
+        """
+        import os as _os
+        import shutil as _shutil
+        import sys as _sys
+
+        override = (self._python_interpreter_path or "").strip()
+        if override and Path(override).exists():
+            return override, []
+
+        env_override = (_os.environ.get("SPUTILITY_PYTHON") or "").strip()
+        if env_override and Path(env_override).exists():
+            return env_override, []
+
+        frozen = bool(getattr(_sys, "frozen", False))
+        if not frozen:
+            return _sys.executable, []
+
+        for cand in ("python.exe", "python3.exe", "python", "python3"):
+            found = _shutil.which(cand)
+            if found:
+                return found, []
+
+        py_launcher = _shutil.which("py")
+        if py_launcher:
+            return py_launcher, ["-3"]
+
+        return None
+
+    def _on_pick_python_interpreter(self):
+        from PySide6.QtWidgets import QFileDialog
+        start_dir = str(Path(self._python_interpreter_path).parent) if self._python_interpreter_path else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Python interpreter",
+            start_dir,
+            "Python executable (python.exe python3.exe python py.exe);;All files (*.*)",
+        )
+        if not path:
+            return
+        self._python_interpreter_path = path
+        self._output_edit.appendPlainText(f"[S-Params Studio] Interprete Python impostato: {path}")
+        self.project_modified.emit()
+
     def _on_run_emerge(self):
         script = self._generate_emerge_script()
         self._script_edit.setPlainText(script)
@@ -2216,13 +2288,27 @@ class ViaWindow(QMainWindow):
         script_path = folder / "via_simulation.py"
         script_path.write_text(script, encoding="utf-8")
         self._emerge_folder = folder
+
+        resolved = self._resolve_python_interpreter()
+        if resolved is None:
+            QMessageBox.critical(
+                self,
+                "Python interpreter not found",
+                "L'app è in esecuzione come eseguibile congelato (PyInstaller) e non è stato "
+                "trovato un interprete Python con EMerge installato.\n\n"
+                "Usa il pulsante \"Python…\" per selezionare python.exe, oppure imposta la "
+                "variabile d'ambiente SPUTILITY_PYTHON.",
+            )
+            return
+        program, prefix_args = resolved
+
         self._output_edit.clear()
         self._output_edit.appendPlainText(
             "[S-Params Studio] Script salvato in:\n  " + str(script_path) + "\n"
+            + "[S-Params Studio] Interprete:\n  " + program + " " + " ".join(prefix_args) + "\n"
             + "[S-Params Studio] Avvio EMerge dalla cartella:\n  " + str(folder) + "\n"
             + "-" * 60
         )
-        import sys
         self._emerge_process = QProcess(self)
         self._emerge_process.setWorkingDirectory(str(folder))
         self._emerge_process.readyReadStandardOutput.connect(self._on_emerge_stdout)
@@ -2231,7 +2317,7 @@ class ViaWindow(QMainWindow):
         self._emerge_process.errorOccurred.connect(self._on_emerge_error)
         self._btn_run_emerge.setEnabled(False)
         self._btn_stop_emerge.setVisible(True)
-        self._emerge_process.start(sys.executable, [str(script_path)])
+        self._emerge_process.start(program, [*prefix_args, str(script_path)])
 
     def _on_stop_emerge(self):
         if self._emerge_process and self._emerge_process.state() != QProcess.NotRunning:
@@ -2533,35 +2619,26 @@ class ViaWindow(QMainWindow):
 
         # â”€â”€ Port geometry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Input ports (1,2): entry layer, nearest reference below entry
-        # Lumped-port plate must sit ENTIRELY in the dielectric gap between the
-        # signal trace bottom (z_entry_bot_mm) and the top of the reference plane
-        # below it (entry_port_z_ref_mm). Including the trace thickness in the
-        # plate would make the plate overlap the trace end-face (a PEC surface),
-        # which shorts the port BC and produces ~-40 dB IL at DC.
         entry_ci = via_from[0]
         if entry_ci + 1 < len(copper_info):
             entry_port_z_ref_mm = copper_info[entry_ci + 1][3]  # z_top of layer below
         else:
             entry_port_z_ref_mm = z_entry_bot_mm
-        entry_port_h_mm = max(z_entry_bot_mm - entry_port_z_ref_mm, 1e-6)
-        entry_port_oz_mm = entry_port_z_ref_mm
+        entry_port_h_mm = max(z_entry_top_mm - entry_port_z_ref_mm, thick_entry_mm)
+        entry_port_oz_mm = entry_port_z_ref_mm if entry_port_z_ref_mm < z_entry_top_mm else z_entry_bot_mm
 
         # Output ports (3,4): exit layer, nearest reference above exit
-        # Plate spans the dielectric gap between the signal-trace TOP (z_exit_top_mm)
-        # and the BOTTOM of the reference plane above it (exit_port_z_ref_mm).
-        # See entry-port comment above for rationale.
         exit_ci = via_to[0]
         if exit_ci > 0:
             exit_port_z_ref_mm = copper_info[exit_ci - 1][4]   # z_bot of layer above
         else:
             exit_port_z_ref_mm = z_exit_top_mm
-        exit_port_h_mm = max(exit_port_z_ref_mm - z_exit_top_mm, 1e-6)
-        exit_port_oz_mm = z_exit_top_mm
+        exit_port_h_mm = max(exit_port_z_ref_mm - z_exit_bot_mm, thick_exit_mm)
+        exit_port_oz_mm = z_exit_bot_mm
 
         port_plate_by_script: dict[int, dict[str, float]] = {}
         port_width_by_script: dict[int, float] = {}
         port_height_by_script: dict[int, float] = {}
-        port_expand_mm = 0.010  # Expand port sheet by 10 um on each side.
         for ctrl_port in input_control_ports:
             script_port = control_to_script_port[ctrl_port]
             feed_geom = entry_feed_by_control[ctrl_port]
@@ -2572,18 +2649,9 @@ class ViaWindow(QMainWindow):
             )
             port_plate["oz"] = entry_port_oz_mm
             port_plate["vz"] = entry_port_h_mm
-            _u_len_mm = max(_math.hypot(float(port_plate["ux"]), float(port_plate["uy"])), 1e-12)
-            _u_ex = (float(port_plate["ux"]) / _u_len_mm) * port_expand_mm
-            _u_ey = (float(port_plate["uy"]) / _u_len_mm) * port_expand_mm
-            port_plate["ox"] = float(port_plate["ox"]) - _u_ex
-            port_plate["oy"] = float(port_plate["oy"]) - _u_ey
-            port_plate["ux"] = float(port_plate["ux"]) + 2.0 * _u_ex
-            port_plate["uy"] = float(port_plate["uy"]) + 2.0 * _u_ey
-            port_plate["oz"] = float(port_plate["oz"]) - port_expand_mm
-            port_plate["vz"] = float(port_plate["vz"]) + 2.0 * port_expand_mm
             port_plate_by_script[script_port] = port_plate
-            port_width_by_script[script_port] = _u_len_mm + 2.0 * port_expand_mm
-            port_height_by_script[script_port] = entry_port_h_mm + 2.0 * port_expand_mm
+            port_width_by_script[script_port] = float(feed_geom["width_mm"])
+            port_height_by_script[script_port] = entry_port_h_mm
 
         for ctrl_port in output_control_ports:
             script_port = control_to_script_port[ctrl_port]
@@ -2595,23 +2663,14 @@ class ViaWindow(QMainWindow):
             )
             port_plate["oz"] = exit_port_oz_mm
             port_plate["vz"] = exit_port_h_mm
-            _u_len_mm = max(_math.hypot(float(port_plate["ux"]), float(port_plate["uy"])), 1e-12)
-            _u_ex = (float(port_plate["ux"]) / _u_len_mm) * port_expand_mm
-            _u_ey = (float(port_plate["uy"]) / _u_len_mm) * port_expand_mm
-            port_plate["ox"] = float(port_plate["ox"]) - _u_ex
-            port_plate["oy"] = float(port_plate["oy"]) - _u_ey
-            port_plate["ux"] = float(port_plate["ux"]) + 2.0 * _u_ex
-            port_plate["uy"] = float(port_plate["uy"]) + 2.0 * _u_ey
-            port_plate["oz"] = float(port_plate["oz"]) - port_expand_mm
-            port_plate["vz"] = float(port_plate["vz"]) + 2.0 * port_expand_mm
             port_plate_by_script[script_port] = port_plate
-            port_width_by_script[script_port] = _u_len_mm + 2.0 * port_expand_mm
-            port_height_by_script[script_port] = exit_port_h_mm + 2.0 * port_expand_mm
+            port_width_by_script[script_port] = float(feed_geom["width_mm"])
+            port_height_by_script[script_port] = exit_port_h_mm
 
         # â”€â”€ Emit generated script â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         lines: list[str] = []
-        lines.append('"""EMerge via simulation script â€” auto-generated by S-Params Studio.')
-        lines.append('   Uses 3D primitives (Box, Cylinder) â€” no PCB layouter."""')
+        lines.append('"""EMerge via simulation script - auto-generated by S-Params Studio.')
+        lines.append('   Uses 3D primitives (Box, Cylinder) - no PCB layouter."""')
         lines.append("")
         lines.append("import datetime")
         lines.append("import emerge_iron")
@@ -2672,9 +2731,22 @@ class ViaWindow(QMainWindow):
         lines.append("mm = 0.001  # metres per mm unit")
         lines.append("")
         lines.append('m = em.Simulation(ProjectName)')
-        lines.append('m.check_version("2.6.9")')
+        _vcheck_mode = (
+            self._emerge_version_check_mode.currentData()
+            if hasattr(self, "_emerge_version_check_mode") else "warn"
+        )
+        _vcheck_target = _detect_emerge_version()
+        if _vcheck_mode == "strict":
+            lines.append(f'm.check_version("{_vcheck_target}")')
+        elif _vcheck_mode == "warn":
+            lines.append("try:")
+            lines.append(f'    m.check_version("{_vcheck_target}", log=True)')
+            lines.append("except Exception as _ver_err:")
+            lines.append("    print(f'[EMerge] version check warning: {_ver_err}')")
+        else:  # "skip"
+            lines.append(f'# EMerge version check skipped (script was generated for {_vcheck_target}).')
         lines.append("")
-        lines.append("# â”€â”€ Materials â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Materials ------------------------------------------------------------")
 
         first_copper_gi = next((gi for gi, row in enumerate(stackup) if row.get("is_copper")), None)
         if first_copper_gi is not None:
@@ -2697,7 +2769,7 @@ class ViaWindow(QMainWindow):
                 )
 
         lines.append("")
-        lines.append("# â”€â”€ Geometry parameters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Geometry parameters --------------------------------------------------")
         lines.append(f"drill_r   = {drill_r_mm:.6f} * mm  # via drill radius")
         lines.append(f"pad_r     = {pad_r_mm:.6f} * mm  # landing pad radius")
         lines.append(f"antipad_r_default = {antipad_r_mm:.6f} * mm  # default clearance (antipad) radius")
@@ -2705,7 +2777,7 @@ class ViaWindow(QMainWindow):
         lines.append(f"signal_via_centers_mm = {[(round(x, 6), round(y, 6)) for x, y in signal_via_centers_mm]}")
         lines.append(f"plane_antipad_r_mm_by_layer = {{ {', '.join(f'{gi}: {val:.6f}' for gi, val in plane_antipad_r_mm_by_gi.items())} }}")
         lines.append("")
-        lines.append("# â”€â”€ Stackup layer volumes (Z=0 at top surface, going negative) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Stackup layer volumes (Z=0 at top surface, going negative) ----------")
         for i, (r, (z_top, z_bot)) in enumerate(zip(stackup, layer_z_mm)):
             gi = i
             thick = r["thickness_um"] / 1000.0
@@ -2753,7 +2825,7 @@ class ViaWindow(QMainWindow):
                 lines.append(f"{vname}.material = {diel_var}")
                 lines.append("")
 
-        lines.append("# â”€â”€ Signal via barrel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Signal via barrel ----------------------------------------------------")
         lines.append(f"# From {via_from[2]['name']} z_top={z_via_top_mm:.4f}mm  "
                      f"to {via_to[2]['name']} z_bot={z_via_bot_mm:.4f}mm")
         lines.append(f"via_barrel = em.geo.Cylinder(drill_r, {via_barrel_h_mm:.6f}*mm,")
@@ -2776,7 +2848,7 @@ class ViaWindow(QMainWindow):
                 lines.append(f"    name=\"stub_barrel_diff\")")
                 lines.append(f"stub_barrel_diff.material = {via_material_var}")
         lines.append("")
-        lines.append("# â”€â”€ Via holes used to clear intersected dielectric layers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Via holes used to clear intersected dielectric layers ---------------")
         lines.append("_diel_via_holes = []  # (x[m], y[m], r[m], z_bot[m], z_top[m])")
         lines.append("for _vx, _vy in signal_via_centers_mm:")
         lines.append(f"    _diel_via_holes.append((_vx*mm, _vy*mm, drill_r, {z_via_bot_mm:.6f}*mm, {z_via_top_mm:.6f}*mm))")
@@ -2784,7 +2856,7 @@ class ViaWindow(QMainWindow):
             lines.append("for _vx, _vy in signal_via_centers_mm:")
             lines.append(f"    _diel_via_holes.append((_vx*mm, _vy*mm, drill_r, {z_stub_bot_mm:.6f}*mm, {z_stub_top_mm:.6f}*mm))")
         lines.append("")
-        lines.append("# â”€â”€ Entry feed geometry (inputs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Entry feed geometry (inputs) ----------------------------------------")
         lines.append(f"# Layer: {via_from[2]['name']} (ports 1,2 in differential mode)")
         entry_script_ports = [control_to_script_port[p] for p in input_control_ports]
         for ctrl_port in input_control_ports:
@@ -2793,7 +2865,7 @@ class ViaWindow(QMainWindow):
             y_off = self._feed_port_center_y_mm(ctrl_port)
             feed_name = f"trace_port{script_port}"
             lines.append(
-                f"# Port {script_port} input feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f}Â°, y={y_off:.6f}mm"
+                f"# Port {script_port} input feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f} deg, y={y_off:.6f}mm"
             )
             if str(geom["kind"]) == "trace":
                 lines.append(
@@ -2826,7 +2898,7 @@ class ViaWindow(QMainWindow):
             lines.append(f"trace_start = em.geo.add(trace_start, trace_port{script_port})")
 
         lines.append("")
-        lines.append("# â”€â”€ Exit feed geometry (outputs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Exit feed geometry (outputs) ----------------------------------------")
         lines.append(f"# Layer: {via_to[2]['name']} (ports 3,4 in differential mode)")
         exit_script_ports = [control_to_script_port[p] for p in output_control_ports]
         for ctrl_port in output_control_ports:
@@ -2835,7 +2907,7 @@ class ViaWindow(QMainWindow):
             y_off = self._feed_port_center_y_mm(ctrl_port)
             feed_name = f"trace_port{script_port}"
             lines.append(
-                f"# Port {script_port} output feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f}Â°, y={y_off:.6f}mm"
+                f"# Port {script_port} output feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f} deg, y={y_off:.6f}mm"
             )
             if str(geom["kind"]) == "trace":
                 lines.append(
@@ -2879,7 +2951,7 @@ class ViaWindow(QMainWindow):
             s_h_mm = z_s_top_mm - z_s_bot_mm
             s_from_th_mm = stackup[s_from_gi]["thickness_um"] / 1000.0
             s_to_th_mm = stackup[s_to_gi]["thickness_um"] / 1000.0
-            lines.append("# â”€â”€ Stitching vias â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+            lines.append("# -- Stitching vias -------------------------------------------------------")
             lines.append(f"# Pattern: {self._stitch_pattern.currentText()}, "
                          f"N={len(stitch_coords)} vias")
             lines.append(f"_s_drill_r = {s_drill_r_mm:.6f} * mm")
@@ -2896,7 +2968,7 @@ class ViaWindow(QMainWindow):
             lines.append('        name=f"stitch_{_si}_barrel")')
             lines.append(f"    _sv.material = {via_material_var}")
             lines.append("    _diel_via_holes.append((_sx*mm, _sy*mm, _s_drill_r, _s_z_bot, _s_z_bot + _s_h))")
-            lines.append(f"    # Annular pad on start layer (pad_r ring minus drill hole â€” no overlap with barrel)")
+            lines.append(f"    # Annular pad on start layer (pad_r ring minus drill hole - no overlap with barrel)")
             lines.append(f"    _spad_from = em.geo.Cylinder(_s_pad_r, {s_from_th_mm:.6f}*mm,")
             lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_from_gi][1]:.6f}*mm),")
             lines.append('        name=f"stitch_{_si}_pad_from")')
@@ -2905,7 +2977,7 @@ class ViaWindow(QMainWindow):
             lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_from_gi][1]:.6f}*mm),")
             lines.append('        name=f"stitch_{_si}_pad_from_hole")')
             lines.append("    _spad_from = em.geo.subtract(_spad_from, _spad_from_hole)")
-            lines.append(f"    # Annular pad on end layer (pad_r ring minus drill hole â€” no overlap with barrel)")
+            lines.append(f"    # Annular pad on end layer (pad_r ring minus drill hole - no overlap with barrel)")
             lines.append(f"    _spad_to = em.geo.Cylinder(_s_pad_r, {s_to_th_mm:.6f}*mm,")
             lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_to_gi][1]:.6f}*mm),")
             lines.append('        name=f"stitch_{_si}_pad_to")')
@@ -2917,8 +2989,8 @@ class ViaWindow(QMainWindow):
             lines.append("")
             lines.append("# Stitching barrel clearances on all crossed copper layers")
             lines.append("# All layers (Plane and Signal): subtract drill-size cylinder so barrel fits flush.")
-            lines.append("# Plane layers â†’ barrel surface touches plane copper = electrically connected.")
-            lines.append("# Signal layers â†’ drill-hole only, no antipad, no intersection.")
+            lines.append("# Plane layers -> barrel surface touches plane copper = electrically connected.")
+            lines.append("# Signal layers -> drill-hole only, no antipad, no intersection.")
             for gi, row in enumerate(stackup):
                 if not row.get("is_copper"):
                     continue
@@ -2934,7 +3006,8 @@ class ViaWindow(QMainWindow):
                 lines.append(f'        name=f"layer_{gi}_stitch_{{_si}}_drill_clear")')
                 lines.append(f"    layer_{gi} = em.geo.subtract(layer_{gi}, _sdh)")
             lines.append("")
-        lines.append("# â”€â”€ Dielectric clearances for all crossing vias â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+
+        lines.append("# -- Dielectric clearances for all crossing vias -------------------------")
         for gi, row in enumerate(stackup):
             if row.get("is_copper"):
                 continue
@@ -2949,7 +3022,7 @@ class ViaWindow(QMainWindow):
             lines.append(f"        layer_{gi} = em.geo.subtract(layer_{gi}, _dh)")
             lines.append("")
 
-        lines.append("# â”€â”€ Non-plane copper clearances for crossing vias â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Non-plane copper clearances for crossing vias -----------------------")
         for gi, row in enumerate(stackup):
             if not row.get("is_copper"):
                 continue
@@ -2968,15 +3041,15 @@ class ViaWindow(QMainWindow):
             lines.append(f"        layer_{gi} = em.geo.subtract(layer_{gi}, _ch)")
             lines.append("")
 
-        lines.append("# â”€â”€ Lumped port sheets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Lumped port sheets ---------------------------------------------------")
         lines.append("# Port sheet = 2D Plate at the far end of each trace.")
         lines.append("# Width = trace width, Height = distance to nearest reference plane.")
-        lines.append("# direction=(0,0,1) = E-field vertical (GNDâ†’signal).")
+        lines.append("# direction=(0,0,1) = E-field vertical (GND->signal).")
         for script_port in active_script_ports:
             plate = port_plate_by_script[script_port]
             role_txt = "input" if script_port in (1, 2) and is_diff_mode else ("output" if script_port in (3, 4) else ("input" if script_port == 1 else "output"))
             lines.append(
-                f"# Port {script_port} ({role_txt}): far end of feed trace â€” height={port_height_by_script[script_port]:.4f}mm"
+                f"# Port {script_port} ({role_txt}): far end of feed trace - height={port_height_by_script[script_port]:.4f}mm"
             )
             lines.append(f"port{script_port}_sheet = em.geo.Plate(")
             lines.append(f"    ({plate['ox']:.6f}*mm, {plate['oy']:.6f}*mm, {plate['oz']:.6f}*mm),")
@@ -2984,7 +3057,7 @@ class ViaWindow(QMainWindow):
             lines.append(f"    (0, 0, {plate['vz']:.6f}*mm),")
             lines.append(f"    name=\"port{script_port}_sheet\")")
 
-        lines.append("# â”€â”€ Geometry finalisation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Geometry finalisation ------------------------------------------------")
         lines.append("# Open region (1mm padding around structure)")
         lines.append("air = em.geo.open_region(1*mm, 1*mm, 1*mm)")
         lines.append("")
@@ -2995,10 +3068,10 @@ class ViaWindow(QMainWindow):
             else:
                 lines.append("m.view()")
         lines.append("")
-        lines.append("# â”€â”€ Simulation setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Simulation setup -----------------------------------------------------")
         lines.append(f"m.mw.set_frequency_range({f_start:.4f}e9, {f_stop:.4f}e9, {n_pts})")
         lines.append("")
-        lines.append("# â”€â”€ Mesh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Mesh -----------------------------------------------------------------")
         lines.append(f"m.mw.set_resolution({mesh_resolution:.3f})  # fraction of max wavelength")
         lines.append("m.settings.safe_mode = True")
         lines.append(f"mesh_local_enabled = {mesh_local_enabled}")
@@ -3039,25 +3112,23 @@ class ViaWindow(QMainWindow):
         lines.append("")
         lines.append("")
         lines.append("")
-        lines.append("# â”€â”€ Lumped ports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Lumped ports ---------------------------------------------------------")
         if is_diff_mode:
             lines.append("# Differential numbering: ports 1,2 = inputs on entry layer; ports 3,4 = outputs on exit layer.")
         else:
             lines.append("# Single-ended numbering: port 1 = input on entry layer; port 2 = output on exit layer.")
         for script_port in active_script_ports:
-            is_exit = script_port in exit_script_ports
-            dir_z = -1 if is_exit else 1
             lines.append(f"p{script_port} = m.mw.bc.LumpedPort(port{script_port}_sheet, {script_port},")
             lines.append(
                 f"    width={port_width_by_script[script_port]:.6f}*mm, height={port_height_by_script[script_port]:.6f}*mm,"
             )
-            lines.append(f"    direction=(0, 0, {dir_z}))")
+            lines.append("    direction=(0, 0, 1))")
             lines.append("")
         lines.append("m.generate_mesh()")
         if show_mesh_in_emerge:
             lines.append("m.view(plot_mesh=True)")
         lines.append("")
-        lines.append("# â”€â”€ Simulation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+        lines.append("# -- Simulation -----------------------------------------------------------")
         lines.append(f"data = m.mw.run_sweep(False, n_workers={n_workers})")
         lines.append("m.save()")
         lines.append("")
@@ -3091,7 +3162,6 @@ class ViaWindow(QMainWindow):
 
 
 
-        lines = [line.encode("ascii", "ignore").decode("ascii") for line in lines]
         return "\n".join(lines)
 
     def _on_gen_script(self):
@@ -3159,6 +3229,31 @@ class ViaWindow(QMainWindow):
                 "pad_um":        self._stitch_pad.value(),
             },
             "feed": {
+                "ports": {
+                    "1": self._get_feed_port_config(1),
+                    "2": self._get_feed_port_config(2),
+                    "3": self._get_feed_port_config(3),
+                    "4": self._get_feed_port_config(4),
+                },
+                "start": {
+                    "type": self._feed_start_type.currentText(),
+                    "trace_width_um": self._feed_start_trace_width_um.value(),
+                    "trace_length_um": self._feed_start_trace_length_um.value(),
+                    "trace_angle_deg": self._feed_start_trace_angle_deg.value(),
+                },
+                "end": {
+                    "type": self._feed_end_type.currentText(),
+                    "trace_width_um": self._feed_end_trace_width_um.value(),
+                    "trace_length_um": self._feed_end_trace_length_um.value(),
+                    "trace_angle_deg": self._feed_end_trace_angle_deg.value(),
+                },
+            },
+            "simulation": {
+                "f_start_ghz": self._f_start.value(),
+                "f_stop_ghz":  self._f_stop.value(),
+                "n_pts":       self._n_pts.value(),
+                "resolution_mm": self._res_mm.value(),
+                "mesh_local_enabled": self._mesh_local_enable.isChecked(),
                 "mesh_div_via": self._mesh_factor_sliders["via"].value(),
                 "mesh_div_ports": self._mesh_factor_sliders["ports"].value(),
                 "mesh_div_feed": self._mesh_factor_sliders["feed"].value(),
@@ -3170,6 +3265,8 @@ class ViaWindow(QMainWindow):
                 "show_structure_in_emerge": self._show_structure_in_emerge.isChecked(),
                 "show_labels_in_emerge": self._show_labels_in_emerge.isChecked(),
                 "show_mesh_in_emerge": self._show_mesh_in_emerge.isChecked(),
+                "emerge_version_check_mode": self._emerge_version_check_mode.currentData() if hasattr(self, "_emerge_version_check_mode") else "warn",
+                "python_interpreter_path": self._python_interpreter_path,
             },
             "view3d": {
                 "hidden_keys": sorted(self._hidden_3d_keys),
@@ -3338,6 +3435,10 @@ class ViaWindow(QMainWindow):
         self._show_structure_in_emerge.setChecked(sim.get("show_structure_in_emerge", True))
         self._show_labels_in_emerge.setChecked(sim.get("show_labels_in_emerge", False))
         self._show_mesh_in_emerge.setChecked(sim.get("show_mesh_in_emerge", True))
+        _vcheck = str(sim.get("emerge_version_check_mode", "warn"))
+        _vidx = self._emerge_version_check_mode.findData(_vcheck)
+        self._emerge_version_check_mode.setCurrentIndex(_vidx if _vidx >= 0 else 1)
+        self._python_interpreter_path = str(sim.get("python_interpreter_path", "") or "")
         self._simulation_controls_changed()
         self._mesh_controls_changed()
 
