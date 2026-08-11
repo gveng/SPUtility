@@ -2461,8 +2461,11 @@ class ViaWindow(QMainWindow):
             c, s = _math.cos(a), _math.sin(a)
             wx, wy = -s, c
             if kind == "trace":
-                ox = (contact_offset_mm + l_mm) * c - (w_mm / 2.0) * wx
-                oy = center_y_mm + (contact_offset_mm + l_mm) * s - (w_mm / 2.0) * wy
+                # Keep the sheet slightly inside trace volume to avoid edge-only contact.
+                inset_mm = min(0.001, max(0.0, 0.05 * l_mm))
+                sheet_dist_mm = contact_offset_mm + max(l_mm - inset_mm, 0.0)
+                ox = sheet_dist_mm * c - (w_mm / 2.0) * wx
+                oy = center_y_mm + sheet_dist_mm * s - (w_mm / 2.0) * wy
                 ux, uy = w_mm * wx, w_mm * wy
             else:
                 ox = -0.5 * w_mm
@@ -2636,6 +2639,14 @@ class ViaWindow(QMainWindow):
         exit_port_h_mm = max(exit_port_z_ref_mm - z_exit_bot_mm, thick_exit_mm)
         exit_port_oz_mm = z_exit_bot_mm
 
+        entry_ref_gi = copper_info[entry_ci + 1][1] if entry_ci + 1 < len(copper_info) else via_from_gi
+        exit_ref_gi = copper_info[exit_ci - 1][1] if exit_ci > 0 else via_to_gi
+        entry_ref_name = str(stackup[entry_ref_gi].get("name", f"layer_{entry_ref_gi}"))
+        exit_ref_name = str(stackup[exit_ref_gi].get("name", f"layer_{exit_ref_gi}"))
+        entry_ref_net = str(stackup[entry_ref_gi].get("net", "")).strip() or "(no-net)"
+        exit_ref_net = str(stackup[exit_ref_gi].get("net", "")).strip() or "(no-net)"
+        warn_unstitched_ref_planes = (not self._stitch_enable.isChecked()) and (entry_ref_gi != exit_ref_gi)
+
         port_plate_by_script: dict[int, dict[str, float]] = {}
         port_width_by_script: dict[int, float] = {}
         port_height_by_script: dict[int, float] = {}
@@ -2745,6 +2756,13 @@ class ViaWindow(QMainWindow):
             lines.append("    print(f'[EMerge] version check warning: {_ver_err}')")
         else:  # "skip"
             lines.append(f'# EMerge version check skipped (script was generated for {_vcheck_target}).')
+        if warn_unstitched_ref_planes:
+            lines.append("print('[S-Params Studio] WARNING: Port references are on different physical planes with stitching disabled.')")
+            lines.append(
+                f"print('[S-Params Studio] Entry ref: {entry_ref_name} (net={entry_ref_net}) | Exit ref: {exit_ref_name} (net={exit_ref_net})')"
+            )
+            lines.append("print('[S-Params Studio] Same net label (e.g. GND) is not a physical connection in 3D EM unless copper is connected.')")
+            lines.append("print('[S-Params Studio] Enable stitching vias or add an explicit copper tie between the two reference planes.')")
         lines.append("")
         lines.append("# -- Materials ------------------------------------------------------------")
 
@@ -2782,70 +2800,81 @@ class ViaWindow(QMainWindow):
             gi = i
             thick = r["thickness_um"] / 1000.0
             vname = f"layer_{i}"
-            if r["is_copper"]:
-                if gi in signal_gi_set:
-                    # Signal layer: pads are created and united with trace in the feed section below.
-                    lines.append(f"# Signal copper layer: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
-                    lines.append(f"# (pads created and united with trace in the feed section below)")
-                    lines.append("")
-                elif str(r.get("role", "Signal")) == "Plane":
-                    # Plane copper layer: rectangular box with optional antipad subtraction.
-                    lines.append(f"# Reference copper plane: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
-                    lines.append(f"{vname} = em.geo.Box(2*domain_hw, 2*domain_hw, {thick:.6f}*mm,")
-                    lines.append(f"    position=(-domain_hw, -domain_hw, {z_bot:.6f}*mm),")
-                    lines.append(f"    alignment=em.geo.Alignment.CORNER,")
-                    lines.append(f"    name=\"{vname}\")")  
-                    lines.append(f"{vname}.material = {_get_material_var(layer_material_entry_by_gi[gi])}")
-                    lines.append(f"_do_sig_clear = ({via_from_gi} < {gi} < {via_to_gi})")
-                    lines.append(f"_do_stub_clear = ({stub_enabled} and {via_to_gi} < {gi} <= {stub_stack_idx})")
-                    lines.append(f"if {gi} in plane_antipad_r_mm_by_layer and (_do_sig_clear or _do_stub_clear):")
-                    lines.append(f"    _ap_r = plane_antipad_r_mm_by_layer[{gi}] * mm")
-                    lines.append(f"    for _vi, (_vx, _vy) in enumerate(signal_via_centers_mm):")
-                    lines.append(f"        _ap = em.geo.Cylinder(_ap_r, {thick:.6f}*mm,")
-                    lines.append(f"            cs=em.GCS.displace(_vx*mm, _vy*mm, {z_bot:.6f}*mm),")
-                    lines.append(f'            name=f"{vname}_antipad_{{_vi}}")' )
-                    lines.append(f"        {vname} = em.geo.subtract({vname}, _ap)")
-                    lines.append("")
-                else:
-                    # Other copper layer: full box, no via antipad subtraction.
-                    lines.append(f"# Copper layer: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
-                    lines.append(f"{vname} = em.geo.Box(2*domain_hw, 2*domain_hw, {thick:.6f}*mm,")
-                    lines.append(f"    position=(-domain_hw, -domain_hw, {z_bot:.6f}*mm),")
-                    lines.append(f"    alignment=em.geo.Alignment.CORNER,")
-                    lines.append(f"    name=\"{vname}\")")  
-                    lines.append(f"{vname}.material = {_get_material_var(layer_material_entry_by_gi[gi])}")
-                    lines.append("")
-            else:
-                diel_var = _get_material_var(layer_material_entry_by_gi[gi])
-                lines.append(f"# Dielectric layer: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
-                lines.append(f"{vname} = em.geo.Box(2*domain_hw, 2*domain_hw, {thick:.6f}*mm,")
-                lines.append(f"    position=(-domain_hw, -domain_hw, {z_bot:.6f}*mm),")
-                lines.append(f"    alignment=em.geo.Alignment.CORNER,")
-                lines.append(f"    name=\"{vname}\")")  
-                lines.append(f"{vname}.material = {diel_var}")
+            material_var = _get_material_var(layer_material_entry_by_gi[gi])
+            if r["is_copper"] and gi in signal_gi_set:
+                # Signal layer solids are defined by feed/pad geometry later.
+                lines.append(f"# Signal copper layer: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
+                lines.append("# (pads created and united with trace in the feed section below)")
                 lines.append("")
+                continue
+
+            if r["is_copper"] and str(r.get("role", "Signal")) == "Plane":
+                lines.append(f"# Reference copper plane: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
+            elif r["is_copper"]:
+                lines.append(f"# Copper layer: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
+            else:
+                lines.append(f"# Dielectric layer: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
+
+            lines.append(f"{vname}_name = \"{vname}\"")
+            lines.append(f"{vname}_dx = 2*domain_hw")
+            lines.append(f"{vname}_dy = 2*domain_hw")
+            lines.append(f"{vname}_dz = {thick:.6f}*mm")
+            lines.append(f"{vname}_position = (-domain_hw, -domain_hw, {z_bot:.6f}*mm)")
+            lines.append(f"{vname} = em.geo.Box(")
+            lines.append(f"    {vname}_dx,")
+            lines.append(f"    {vname}_dy,")
+            lines.append(f"    {vname}_dz,")
+            lines.append(f"    position={vname}_position,")
+            lines.append("    alignment=em.geo.Alignment.CORNER,")
+            lines.append(f"    name={vname}_name,")
+            lines.append(")")
+            lines.append(f"{vname}.material = {material_var}")
+
+            if r["is_copper"] and str(r.get("role", "Signal")) == "Plane":
+                lines.append(f"_do_sig_clear = ({via_from_gi} < {gi} < {via_to_gi})")
+                lines.append(f"_do_stub_clear = ({stub_enabled} and {via_to_gi} < {gi} <= {stub_stack_idx})")
+                lines.append(f"if {gi} in plane_antipad_r_mm_by_layer and (_do_sig_clear or _do_stub_clear):")
+                lines.append(f"    _ap_r = plane_antipad_r_mm_by_layer[{gi}] * mm")
+                lines.append("    _plane_antipads = []")
+                lines.append("    for _vi, (_vx, _vy) in enumerate(signal_via_centers_mm):")
+                lines.append(f"        _ap_name = f\"{vname}_antipad_{{_vi}}\"")
+                lines.append(f"        _ap_cs = em.GCS.displace(_vx*mm, _vy*mm, {z_bot:.6f}*mm)")
+                lines.append(f"        _ap = em.geo.Cylinder(_ap_r, {vname}_dz, cs=_ap_cs, name=_ap_name)")
+                lines.append("        _plane_antipads.append(_ap)")
+                lines.append("    for _ap in _plane_antipads:")
+                lines.append(f"        {vname} = em.geo.subtract({vname}, _ap)")
+
+            lines.append("")
 
         lines.append("# -- Signal via barrel ----------------------------------------------------")
         lines.append(f"# From {via_from[2]['name']} z_top={z_via_top_mm:.4f}mm  "
                      f"to {via_to[2]['name']} z_bot={z_via_bot_mm:.4f}mm")
-        lines.append(f"via_barrel = em.geo.Cylinder(drill_r, {via_barrel_h_mm:.6f}*mm,")
-        lines.append(f"    cs=em.GCS.displace(0, 0, {z_via_bot_mm:.6f}*mm),")
-        lines.append(f"    name=\"via_barrel\")")
+        lines.append("via_barrel_name = \"via_barrel\"")
+        lines.append("via_barrel_radius = drill_r")
+        lines.append(f"via_barrel_height = {via_barrel_h_mm:.6f}*mm")
+        lines.append(f"via_barrel_cs = em.GCS.displace(0, 0, {z_via_bot_mm:.6f}*mm)")
+        lines.append("via_barrel = em.geo.Cylinder(via_barrel_radius, via_barrel_height, cs=via_barrel_cs, name=via_barrel_name)")
         lines.append(f"via_barrel.material = {via_material_var}")
         if self._radio_diff.isChecked():
-            lines.append(f"via_barrel_diff = em.geo.Cylinder(drill_r, {via_barrel_h_mm:.6f}*mm,")
-            lines.append(f"    cs=em.GCS.displace(0, {diff_offset_mm:.6f}*mm, {z_via_bot_mm:.6f}*mm),")
-            lines.append(f"    name=\"via_barrel_diff\")")
+            lines.append("via_barrel_diff_name = \"via_barrel_diff\"")
+            lines.append("via_barrel_diff_radius = drill_r")
+            lines.append("via_barrel_diff_height = via_barrel_height")
+            lines.append(f"via_barrel_diff_cs = em.GCS.displace(0, {diff_offset_mm:.6f}*mm, {z_via_bot_mm:.6f}*mm)")
+            lines.append("via_barrel_diff = em.geo.Cylinder(via_barrel_diff_radius, via_barrel_diff_height, cs=via_barrel_diff_cs, name=via_barrel_diff_name)")
             lines.append(f"via_barrel_diff.material = {via_material_var}")
         if stub_enabled:
-            lines.append(f"stub_barrel = em.geo.Cylinder(drill_r, {stub_h_mm:.6f}*mm,")
-            lines.append(f"    cs=em.GCS.displace(0, 0, {z_stub_bot_mm:.6f}*mm),")
-            lines.append(f"    name=\"stub_barrel\")")
+            lines.append("stub_barrel_name = \"stub_barrel\"")
+            lines.append("stub_barrel_radius = drill_r")
+            lines.append(f"stub_barrel_height = {stub_h_mm:.6f}*mm")
+            lines.append(f"stub_barrel_cs = em.GCS.displace(0, 0, {z_stub_bot_mm:.6f}*mm)")
+            lines.append("stub_barrel = em.geo.Cylinder(stub_barrel_radius, stub_barrel_height, cs=stub_barrel_cs, name=stub_barrel_name)")
             lines.append(f"stub_barrel.material = {via_material_var}")
             if self._radio_diff.isChecked():
-                lines.append(f"stub_barrel_diff = em.geo.Cylinder(drill_r, {stub_h_mm:.6f}*mm,")
-                lines.append(f"    cs=em.GCS.displace(0, {diff_offset_mm:.6f}*mm, {z_stub_bot_mm:.6f}*mm),")
-                lines.append(f"    name=\"stub_barrel_diff\")")
+                lines.append("stub_barrel_diff_name = \"stub_barrel_diff\"")
+                lines.append("stub_barrel_diff_radius = drill_r")
+                lines.append("stub_barrel_diff_height = stub_barrel_height")
+                lines.append(f"stub_barrel_diff_cs = em.GCS.displace(0, {diff_offset_mm:.6f}*mm, {z_stub_bot_mm:.6f}*mm)")
+                lines.append("stub_barrel_diff = em.geo.Cylinder(stub_barrel_diff_radius, stub_barrel_diff_height, cs=stub_barrel_diff_cs, name=stub_barrel_diff_name)")
                 lines.append(f"stub_barrel_diff.material = {via_material_var}")
         lines.append("")
         lines.append("# -- Via holes used to clear intersected dielectric layers ---------------")
@@ -2868,28 +2897,39 @@ class ViaWindow(QMainWindow):
                 f"# Port {script_port} input feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f} deg, y={y_off:.6f}mm"
             )
             if str(geom["kind"]) == "trace":
-                lines.append(
-                    f"{feed_name} = em.geo.Box({float(geom['length_mm']):.6f}*mm, {float(geom['width_mm']):.6f}*mm, {thick_entry_mm:.6f}*mm,"
-                )
-                lines.append(
-                    f"    position=({float(geom['contact_offset_mm']):.6f}*mm, {y_off - float(geom['width_mm']) / 2.0:.6f}*mm, {z_entry_bot_mm:.6f}*mm),"
-                )
+                lines.append(f"{feed_name}_name = \"{feed_name}\"")
+                lines.append(f"{feed_name}_dx = {float(geom['length_mm']):.6f}*mm")
+                lines.append(f"{feed_name}_dy = {float(geom['width_mm']):.6f}*mm")
+                lines.append(f"{feed_name}_dz = {thick_entry_mm:.6f}*mm")
+                lines.append(f"{feed_name}_position = ({float(geom['contact_offset_mm']):.6f}*mm, {y_off - float(geom['width_mm']) / 2.0:.6f}*mm, {z_entry_bot_mm:.6f}*mm)")
+                lines.append(f"{feed_name} = em.geo.Box(")
+                lines.append(f"    {feed_name}_dx,")
+                lines.append(f"    {feed_name}_dy,")
+                lines.append(f"    {feed_name}_dz,")
+                lines.append(f"    position={feed_name}_position,")
                 lines.append("    alignment=em.geo.Alignment.CORNER,")
-                lines.append(f"    name=\"{feed_name}\")")
+                lines.append(f"    name={feed_name}_name,")
+                lines.append(")")
                 lines.append(f"{feed_name}.material = {conductor_default_var}")
                 if abs(float(geom["angle_deg"]) % 360) > 0.1:
-                    lines.append(f"{feed_name} = em.geo.rotate({feed_name}, c0=(0, {y_off:.6f}*mm, 0),")
-                    lines.append(f"    ax=(0, 0, 1), angle={float(geom['angle_deg']):.4f})")
+                    lines.append(f"{feed_name}_rot_center = (0, {y_off:.6f}*mm, 0)")
+                    lines.append(f"{feed_name}_rot_axis = (0, 0, 1)")
+                    lines.append(f"{feed_name}_rot_angle = {float(geom['angle_deg']):.4f}")
+                    lines.append(f"{feed_name} = em.geo.rotate({feed_name}, c0={feed_name}_rot_center, ax={feed_name}_rot_axis, angle={feed_name}_rot_angle)")
             else:
                 coax_r_start_mm = max(drill_r_mm * 0.65, 0.03)
                 coax_h_start_mm = max(0.4, 0.35 * (layer_z_mm[0][0] - layer_z_mm[-1][1]))
-                lines.append(f"{feed_name} = em.geo.Cylinder({coax_r_start_mm:.6f}*mm, {coax_h_start_mm:.6f}*mm,")
-                lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_entry_top_mm:.6f}*mm),")
-                lines.append(f"    name=\"{feed_name}\")")
+                lines.append(f"{feed_name}_name = \"{feed_name}\"")
+                lines.append(f"{feed_name}_radius = {coax_r_start_mm:.6f}*mm")
+                lines.append(f"{feed_name}_height = {coax_h_start_mm:.6f}*mm")
+                lines.append(f"{feed_name}_cs = em.GCS.displace(0, {y_off:.6f}*mm, {z_entry_top_mm:.6f}*mm)")
+                lines.append(f"{feed_name} = em.geo.Cylinder({feed_name}_radius, {feed_name}_height, cs={feed_name}_cs, name={feed_name}_name)")
                 lines.append(f"{feed_name}.material = {conductor_default_var}")
-            lines.append(f"_pad_p{script_port} = em.geo.Cylinder(pad_r, {thick_entry_mm:.6f}*mm,")
-            lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_entry_bot_mm:.6f}*mm),")
-            lines.append(f"    name=\"entry_pad_p{script_port}\")")
+            lines.append(f"_pad_p{script_port}_name = \"entry_pad_p{script_port}\"")
+            lines.append(f"_pad_p{script_port}_radius = pad_r")
+            lines.append(f"_pad_p{script_port}_height = {thick_entry_mm:.6f}*mm")
+            lines.append(f"_pad_p{script_port}_cs = em.GCS.displace(0, {y_off:.6f}*mm, {z_entry_bot_mm:.6f}*mm)")
+            lines.append(f"_pad_p{script_port} = em.geo.Cylinder(_pad_p{script_port}_radius, _pad_p{script_port}_height, cs=_pad_p{script_port}_cs, name=_pad_p{script_port}_name)")
             lines.append(f"_pad_p{script_port}.material = {conductor_default_var}")
             lines.append(f"{feed_name} = em.geo.add({feed_name}, _pad_p{script_port})")
 
@@ -2910,28 +2950,39 @@ class ViaWindow(QMainWindow):
                 f"# Port {script_port} output feed: type={str(geom['kind'])}, angle={float(geom['angle_deg']):.1f} deg, y={y_off:.6f}mm"
             )
             if str(geom["kind"]) == "trace":
-                lines.append(
-                    f"{feed_name} = em.geo.Box({float(geom['length_mm']):.6f}*mm, {float(geom['width_mm']):.6f}*mm, {thick_exit_mm:.6f}*mm,"
-                )
-                lines.append(
-                    f"    position=({float(geom['contact_offset_mm']):.6f}*mm, {y_off - float(geom['width_mm']) / 2.0:.6f}*mm, {z_exit_bot_mm:.6f}*mm),"
-                )
+                lines.append(f"{feed_name}_name = \"{feed_name}\"")
+                lines.append(f"{feed_name}_dx = {float(geom['length_mm']):.6f}*mm")
+                lines.append(f"{feed_name}_dy = {float(geom['width_mm']):.6f}*mm")
+                lines.append(f"{feed_name}_dz = {thick_exit_mm:.6f}*mm")
+                lines.append(f"{feed_name}_position = ({float(geom['contact_offset_mm']):.6f}*mm, {y_off - float(geom['width_mm']) / 2.0:.6f}*mm, {z_exit_bot_mm:.6f}*mm)")
+                lines.append(f"{feed_name} = em.geo.Box(")
+                lines.append(f"    {feed_name}_dx,")
+                lines.append(f"    {feed_name}_dy,")
+                lines.append(f"    {feed_name}_dz,")
+                lines.append(f"    position={feed_name}_position,")
                 lines.append("    alignment=em.geo.Alignment.CORNER,")
-                lines.append(f"    name=\"{feed_name}\")")
+                lines.append(f"    name={feed_name}_name,")
+                lines.append(")")
                 lines.append(f"{feed_name}.material = {conductor_default_var}")
                 if abs(float(geom["angle_deg"]) % 360) > 0.1:
-                    lines.append(f"{feed_name} = em.geo.rotate({feed_name}, c0=(0, {y_off:.6f}*mm, 0),")
-                    lines.append(f"    ax=(0, 0, 1), angle={float(geom['angle_deg']):.4f})")
+                    lines.append(f"{feed_name}_rot_center = (0, {y_off:.6f}*mm, 0)")
+                    lines.append(f"{feed_name}_rot_axis = (0, 0, 1)")
+                    lines.append(f"{feed_name}_rot_angle = {float(geom['angle_deg']):.4f}")
+                    lines.append(f"{feed_name} = em.geo.rotate({feed_name}, c0={feed_name}_rot_center, ax={feed_name}_rot_axis, angle={feed_name}_rot_angle)")
             else:
                 coax_r_end_mm = max(drill_r_mm * 0.65, 0.03)
                 coax_h_end_mm = max(0.4, 0.35 * (layer_z_mm[0][0] - layer_z_mm[-1][1]))
-                lines.append(f"{feed_name} = em.geo.Cylinder({coax_r_end_mm:.6f}*mm, {coax_h_end_mm:.6f}*mm,")
-                lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_exit_top_mm:.6f}*mm),")
-                lines.append(f"    name=\"{feed_name}\")")
+                lines.append(f"{feed_name}_name = \"{feed_name}\"")
+                lines.append(f"{feed_name}_radius = {coax_r_end_mm:.6f}*mm")
+                lines.append(f"{feed_name}_height = {coax_h_end_mm:.6f}*mm")
+                lines.append(f"{feed_name}_cs = em.GCS.displace(0, {y_off:.6f}*mm, {z_exit_top_mm:.6f}*mm)")
+                lines.append(f"{feed_name} = em.geo.Cylinder({feed_name}_radius, {feed_name}_height, cs={feed_name}_cs, name={feed_name}_name)")
                 lines.append(f"{feed_name}.material = {conductor_default_var}")
-            lines.append(f"_pad_p{script_port} = em.geo.Cylinder(pad_r, {thick_exit_mm:.6f}*mm,")
-            lines.append(f"    cs=em.GCS.displace(0, {y_off:.6f}*mm, {z_exit_bot_mm:.6f}*mm),")
-            lines.append(f"    name=\"exit_pad_p{script_port}\")")
+            lines.append(f"_pad_p{script_port}_name = \"exit_pad_p{script_port}\"")
+            lines.append(f"_pad_p{script_port}_radius = pad_r")
+            lines.append(f"_pad_p{script_port}_height = {thick_exit_mm:.6f}*mm")
+            lines.append(f"_pad_p{script_port}_cs = em.GCS.displace(0, {y_off:.6f}*mm, {z_exit_bot_mm:.6f}*mm)")
+            lines.append(f"_pad_p{script_port} = em.geo.Cylinder(_pad_p{script_port}_radius, _pad_p{script_port}_height, cs=_pad_p{script_port}_cs, name=_pad_p{script_port}_name)")
             lines.append(f"_pad_p{script_port}.material = {conductor_default_var}")
             lines.append(f"{feed_name} = em.geo.add({feed_name}, _pad_p{script_port})")
 
@@ -2958,34 +3009,48 @@ class ViaWindow(QMainWindow):
             lines.append(f"_s_pad_r   = {s_pad_r_mm:.6f} * mm")
             lines.append(f"_s_h       = {s_h_mm:.6f} * mm")
             lines.append(f"_s_z_bot   = {z_s_bot_mm:.6f} * mm")
+            lines.append("_stitch_conductors = []")
             lines.append("_stitch_coords = [")
             for sx, sy in stitch_coords:
                 lines.append(f"    ({sx:.6f}, {sy:.6f}),  # mm")
             lines.append("]")
             lines.append("for _si, (_sx, _sy) in enumerate(_stitch_coords):")
-            lines.append("    _sv = em.geo.Cylinder(_s_drill_r, _s_h,")
-            lines.append("        cs=em.GCS.displace(_sx*mm, _sy*mm, _s_z_bot),")
-            lines.append('        name=f"stitch_{_si}_barrel")')
+            lines.append("    _sv_name = f\"stitch_{_si}_barrel\"")
+            lines.append("    _sv_radius = _s_drill_r")
+            lines.append("    _sv_height = _s_h")
+            lines.append("    _sv_cs = em.GCS.displace(_sx*mm, _sy*mm, _s_z_bot)")
+            lines.append("    _sv = em.geo.Cylinder(_sv_radius, _sv_height, cs=_sv_cs, name=_sv_name)")
             lines.append(f"    _sv.material = {via_material_var}")
+            lines.append("    _stitch_conductors.append(_sv)")
             lines.append("    _diel_via_holes.append((_sx*mm, _sy*mm, _s_drill_r, _s_z_bot, _s_z_bot + _s_h))")
             lines.append(f"    # Annular pad on start layer (pad_r ring minus drill hole - no overlap with barrel)")
-            lines.append(f"    _spad_from = em.geo.Cylinder(_s_pad_r, {s_from_th_mm:.6f}*mm,")
-            lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_from_gi][1]:.6f}*mm),")
-            lines.append('        name=f"stitch_{_si}_pad_from")')
+            lines.append("    _spad_from_name = f\"stitch_{_si}_pad_from\"")
+            lines.append("    _spad_from_radius = _s_pad_r")
+            lines.append(f"    _spad_from_height = {s_from_th_mm:.6f}*mm")
+            lines.append(f"    _spad_from_cs = em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_from_gi][1]:.6f}*mm)")
+            lines.append("    _spad_from = em.geo.Cylinder(_spad_from_radius, _spad_from_height, cs=_spad_from_cs, name=_spad_from_name)")
             lines.append(f"    _spad_from.material = {conductor_default_var}")
-            lines.append(f"    _spad_from_hole = em.geo.Cylinder(_s_drill_r, {s_from_th_mm:.6f}*mm,")
-            lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_from_gi][1]:.6f}*mm),")
-            lines.append('        name=f"stitch_{_si}_pad_from_hole")')
+            lines.append("    _spad_from_hole_name = f\"stitch_{_si}_pad_from_hole\"")
+            lines.append("    _spad_from_hole_radius = _s_drill_r")
+            lines.append("    _spad_from_hole_height = _spad_from_height")
+            lines.append("    _spad_from_hole_cs = _spad_from_cs")
+            lines.append("    _spad_from_hole = em.geo.Cylinder(_spad_from_hole_radius, _spad_from_hole_height, cs=_spad_from_hole_cs, name=_spad_from_hole_name)")
             lines.append("    _spad_from = em.geo.subtract(_spad_from, _spad_from_hole)")
+            lines.append("    _stitch_conductors.append(_spad_from)")
             lines.append(f"    # Annular pad on end layer (pad_r ring minus drill hole - no overlap with barrel)")
-            lines.append(f"    _spad_to = em.geo.Cylinder(_s_pad_r, {s_to_th_mm:.6f}*mm,")
-            lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_to_gi][1]:.6f}*mm),")
-            lines.append('        name=f"stitch_{_si}_pad_to")')
+            lines.append("    _spad_to_name = f\"stitch_{_si}_pad_to\"")
+            lines.append("    _spad_to_radius = _s_pad_r")
+            lines.append(f"    _spad_to_height = {s_to_th_mm:.6f}*mm")
+            lines.append(f"    _spad_to_cs = em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_to_gi][1]:.6f}*mm)")
+            lines.append("    _spad_to = em.geo.Cylinder(_spad_to_radius, _spad_to_height, cs=_spad_to_cs, name=_spad_to_name)")
             lines.append(f"    _spad_to.material = {conductor_default_var}")
-            lines.append(f"    _spad_to_hole = em.geo.Cylinder(_s_drill_r, {s_to_th_mm:.6f}*mm,")
-            lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {layer_z_mm[s_to_gi][1]:.6f}*mm),")
-            lines.append('        name=f"stitch_{_si}_pad_to_hole")')
+            lines.append("    _spad_to_hole_name = f\"stitch_{_si}_pad_to_hole\"")
+            lines.append("    _spad_to_hole_radius = _s_drill_r")
+            lines.append("    _spad_to_hole_height = _spad_to_height")
+            lines.append("    _spad_to_hole_cs = _spad_to_cs")
+            lines.append("    _spad_to_hole = em.geo.Cylinder(_spad_to_hole_radius, _spad_to_hole_height, cs=_spad_to_hole_cs, name=_spad_to_hole_name)")
             lines.append("    _spad_to = em.geo.subtract(_spad_to, _spad_to_hole)")
+            lines.append("    _stitch_conductors.append(_spad_to)")
             lines.append("")
             lines.append("# Stitching barrel clearances on all crossed copper layers")
             lines.append("# All layers (Plane and Signal): subtract drill-size cylinder so barrel fits flush.")
@@ -3000,10 +3065,15 @@ class ViaWindow(QMainWindow):
                 z_bot_mm = layer_z_mm[gi][1]
                 role_label = str(row.get("role", "Signal")).strip()
                 lines.append(f"# Stitch barrel clearance on {role_label} layer {gi} ({row['name']})")
+                lines.append(f"_layer_{gi}_stitch_cuts = []")
                 lines.append("for _si, (_sx, _sy) in enumerate(_stitch_coords):")
-                lines.append(f"    _sdh = em.geo.Cylinder(_s_drill_r, {th_mm:.6f}*mm,")
-                lines.append(f"        cs=em.GCS.displace(_sx*mm, _sy*mm, {z_bot_mm:.6f}*mm),")
-                lines.append(f'        name=f"layer_{gi}_stitch_{{_si}}_drill_clear")')
+                lines.append(f"    _sdh_name = f\"layer_{gi}_stitch_{{_si}}_drill_clear\"")
+                lines.append("    _sdh_radius = _s_drill_r")
+                lines.append(f"    _sdh_height = {th_mm:.6f}*mm")
+                lines.append(f"    _sdh_cs = em.GCS.displace(_sx*mm, _sy*mm, {z_bot_mm:.6f}*mm)")
+                lines.append("    _sdh = em.geo.Cylinder(_sdh_radius, _sdh_height, cs=_sdh_cs, name=_sdh_name)")
+                lines.append(f"    _layer_{gi}_stitch_cuts.append(_sdh)")
+                lines.append(f"for _sdh in _layer_{gi}_stitch_cuts:")
                 lines.append(f"    layer_{gi} = em.geo.subtract(layer_{gi}, _sdh)")
             lines.append("")
 
@@ -3014,12 +3084,17 @@ class ViaWindow(QMainWindow):
             z_top_mm, z_bot_mm = layer_z_mm[gi]
             th_mm = row["thickness_um"] / 1000.0
             lines.append(f"# Dielectric via clearances on layer {gi} ({row['name']})")
+            lines.append(f"_layer_{gi}_diel_cuts = []")
             lines.append("for _hi, (_hx, _hy, _hr, _hz_bot, _hz_top) in enumerate(_diel_via_holes):")
             lines.append(f"    if not (_hz_top <= {z_bot_mm:.6f}*mm or _hz_bot >= {z_top_mm:.6f}*mm):")
-            lines.append(f"        _dh = em.geo.Cylinder(_hr, {th_mm:.6f}*mm,")
-            lines.append(f"            cs=em.GCS.displace(_hx, _hy, {z_bot_mm:.6f}*mm),")
-            lines.append(f"            name=f\"layer_{gi}_diel_clear_{{_hi}}\")")
-            lines.append(f"        layer_{gi} = em.geo.subtract(layer_{gi}, _dh)")
+            lines.append(f"        _dh_name = f\"layer_{gi}_diel_clear_{{_hi}}\"")
+            lines.append("        _dh_radius = _hr")
+            lines.append(f"        _dh_height = {th_mm:.6f}*mm")
+            lines.append(f"        _dh_cs = em.GCS.displace(_hx, _hy, {z_bot_mm:.6f}*mm)")
+            lines.append("        _dh = em.geo.Cylinder(_dh_radius, _dh_height, cs=_dh_cs, name=_dh_name)")
+            lines.append(f"        _layer_{gi}_diel_cuts.append(_dh)")
+            lines.append(f"for _dh in _layer_{gi}_diel_cuts:")
+            lines.append(f"    layer_{gi} = em.geo.subtract(layer_{gi}, _dh)")
             lines.append("")
 
         lines.append("# -- Non-plane copper clearances for crossing vias -----------------------")
@@ -3033,13 +3108,42 @@ class ViaWindow(QMainWindow):
             z_top_mm, z_bot_mm = layer_z_mm[gi]
             th_mm = row["thickness_um"] / 1000.0
             lines.append(f"# Copper via clearances on layer {gi} ({row['name']})")
+            lines.append(f"_layer_{gi}_cu_cuts = []")
             lines.append("for _hi, (_hx, _hy, _hr, _hz_bot, _hz_top) in enumerate(_diel_via_holes):")
             lines.append(f"    if not (_hz_top <= {z_bot_mm:.6f}*mm or _hz_bot >= {z_top_mm:.6f}*mm):")
-            lines.append(f"        _ch = em.geo.Cylinder(_hr, {th_mm:.6f}*mm,")
-            lines.append(f"            cs=em.GCS.displace(_hx, _hy, {z_bot_mm:.6f}*mm),")
-            lines.append(f"            name=f\"layer_{gi}_cu_clear_{{_hi}}\")")
-            lines.append(f"        layer_{gi} = em.geo.subtract(layer_{gi}, _ch)")
+            lines.append(f"        _ch_name = f\"layer_{gi}_cu_clear_{{_hi}}\"")
+            lines.append("        _ch_radius = _hr")
+            lines.append(f"        _ch_height = {th_mm:.6f}*mm")
+            lines.append(f"        _ch_cs = em.GCS.displace(_hx, _hy, {z_bot_mm:.6f}*mm)")
+            lines.append("        _ch = em.geo.Cylinder(_ch_radius, _ch_height, cs=_ch_cs, name=_ch_name)")
+            lines.append(f"        _layer_{gi}_cu_cuts.append(_ch)")
+            lines.append(f"for _ch in _layer_{gi}_cu_cuts:")
+            lines.append(f"    layer_{gi} = em.geo.subtract(layer_{gi}, _ch)")
             lines.append("")
+
+        lines.append("# -- Conductor union ------------------------------------------------------")
+        lines.append("_signal_conductor_parts = []")
+        lines.append("_signal_conductor_parts.append(via_barrel)")
+        if is_diff_mode:
+            lines.append("_signal_conductor_parts.append(via_barrel_diff)")
+        if stub_enabled:
+            lines.append("_signal_conductor_parts.append(stub_barrel)")
+            if is_diff_mode:
+                lines.append("_signal_conductor_parts.append(stub_barrel_diff)")
+        lines.append("_signal_conductor_parts.append(trace_start)")
+        lines.append("_signal_conductor_parts.append(trace_end)")
+        lines.append("signal_conductor_union = None")
+        lines.append("for _part in _signal_conductor_parts:")
+        lines.append("    if signal_conductor_union is None:")
+        lines.append("        signal_conductor_union = _part")
+        lines.append("    else:")
+        lines.append("        signal_conductor_union = em.geo.add(signal_conductor_union, _part)")
+        if self._stitch_enable.isChecked():
+            lines.append("if '_stitch_conductors' in locals() and _stitch_conductors:")
+            lines.append("    stitch_group = _stitch_conductors[0]")
+            lines.append("    for _sc in _stitch_conductors[1:]:")
+            lines.append("        stitch_group = em.geo.add(stitch_group, _sc)")
+        lines.append("")
 
         lines.append("# -- Lumped port sheets ---------------------------------------------------")
         lines.append("# Port sheet = 2D Plate at the far end of each trace.")
@@ -3051,11 +3155,16 @@ class ViaWindow(QMainWindow):
             lines.append(
                 f"# Port {script_port} ({role_txt}): far end of feed trace - height={port_height_by_script[script_port]:.4f}mm"
             )
+            lines.append(f"port{script_port}_sheet_name = \"port{script_port}_sheet\"")
+            lines.append(f"port{script_port}_sheet_origin = ({plate['ox']:.6f}*mm, {plate['oy']:.6f}*mm, {plate['oz']:.6f}*mm)")
+            lines.append(f"port{script_port}_sheet_u = ({plate['ux']:.6f}*mm, {plate['uy']:.6f}*mm, 0)")
+            lines.append(f"port{script_port}_sheet_v = (0, 0, {plate['vz']:.6f}*mm)")
             lines.append(f"port{script_port}_sheet = em.geo.Plate(")
-            lines.append(f"    ({plate['ox']:.6f}*mm, {plate['oy']:.6f}*mm, {plate['oz']:.6f}*mm),")
-            lines.append(f"    ({plate['ux']:.6f}*mm, {plate['uy']:.6f}*mm, 0),")
-            lines.append(f"    (0, 0, {plate['vz']:.6f}*mm),")
-            lines.append(f"    name=\"port{script_port}_sheet\")")
+            lines.append(f"    port{script_port}_sheet_origin,")
+            lines.append(f"    port{script_port}_sheet_u,")
+            lines.append(f"    port{script_port}_sheet_v,")
+            lines.append(f"    name=port{script_port}_sheet_name,")
+            lines.append(")")
 
         lines.append("# -- Geometry finalisation ------------------------------------------------")
         lines.append("# Open region (1mm padding around structure)")
