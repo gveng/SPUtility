@@ -1,4 +1,4 @@
-__version__ = "2.6.11 Beta"
+__version__ = "2.7.0 Beta"
 __app_name__ = "S-Params Studio"
 __build_date__ = "2026-05-05"
 __author__ = "Gabriele Vittori"

@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import importlib
 import math
+import re
+import tarfile
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import QProcess, Qt, Signal
+from PySide6.QtCore import QProcess, QTimer, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -43,6 +47,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QProgressDialog,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -243,6 +248,481 @@ def _build_emerge_material_catalog() -> list[dict[str, object]]:
         seen.add(key)
         deduped.append(entry)
     return deduped
+
+
+def _odb_read_text_entries(source_path: str | Path) -> dict[str, str]:
+    entries: dict[str, str] = {}
+    src = Path(source_path)
+
+    def _store(name: str, data: bytes):
+        if not name:
+            return
+        norm = name.replace("\\", "/").lstrip("./")
+        if not norm:
+            return
+        try:
+            entries[norm] = data.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                entries[norm] = data.decode("latin-1")
+            except Exception:
+                return
+
+    if src.is_dir():
+        for p in src.rglob("*"):
+            if not p.is_file():
+                continue
+            rel = str(p.relative_to(src)).replace("\\", "/")
+            try:
+                _store(rel, p.read_bytes())
+            except Exception:
+                continue
+        return entries
+
+    low = src.name.lower()
+    if low.endswith((".tgz", ".tar.gz", ".tar")):
+        with tarfile.open(src, "r:*") as tf:
+            for m in tf.getmembers():
+                if not m.isfile():
+                    continue
+                f = tf.extractfile(m)
+                if f is None:
+                    continue
+                _store(m.name, f.read())
+        return entries
+
+    if low.endswith(".zip"):
+        with zipfile.ZipFile(src, "r") as zf:
+            for name in zf.namelist():
+                if name.endswith("/"):
+                    continue
+                _store(name, zf.read(name))
+        return entries
+
+    raise ValueError("Unsupported ODB++ source. Select folder, .tgz/.tar.gz/.tar, or .zip")
+
+
+def _odb_length_to_um(raw: str) -> float | None:
+    m = re.search(r"([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*([a-zA-Z]+)?", raw)
+    if not m:
+        return None
+    try:
+        val = float(m.group(1))
+    except Exception:
+        return None
+    unit = (m.group(2) or "um").lower()
+    if unit in ("um", "micron", "microns"):
+        return val
+    if unit in ("mm",):
+        return val * 1000.0
+    if unit in ("mil",):
+        return val * 25.4
+    if unit in ("in", "inch", "inches"):
+        return val * 25400.0
+    if unit in ("m",):
+        return val * 1e6
+    return val
+
+
+def _parse_odb_attrlist(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", "!", ";")):
+            continue
+        if "=" in line:
+            k, v = line.split("=", 1)
+        elif ":" in line:
+            k, v = line.split(":", 1)
+        else:
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            k, v = parts
+        out[k.strip().lower()] = v.strip().strip('"')
+    return out
+
+
+def _parse_odb_stackup(source_path: str | Path) -> tuple[list[dict[str, object]], list[str]]:
+    entries = _odb_read_text_entries(source_path)
+    warnings: list[str] = []
+
+    matrix_paths = [
+        p for p in entries
+        if p.lower().endswith("/matrix/matrix") or p.lower().endswith("/matrix")
+    ]
+
+    layer_order: list[dict[str, object]] = []
+    seen_names: set[str] = set()
+    for mp in sorted(matrix_paths):
+        for raw in entries[mp].splitlines():
+            line = raw.strip()
+            if not line or line.startswith(("#", "!", ";")):
+                continue
+            tokens = re.split(r"\s+", line)
+            if not tokens:
+                continue
+            head = tokens[0].lower()
+            if head not in {"layer", "row", "lyr"} or len(tokens) < 2:
+                continue
+            name = tokens[1].strip('"')
+            key = name.lower()
+            if key in seen_names:
+                continue
+            lowered = line.lower()
+            is_copper = not any(k in lowered for k in ("dielectric", "core", "prepreg", "insulator"))
+            if any(k in lowered for k in ("copper", "signal", "plane", "power", "ground", "metal")):
+                is_copper = True
+            role = "Dielectric" if not is_copper else ("Plane" if any(k in lowered for k in ("plane", "power", "ground", "gnd", "pwr")) else "Signal")
+            layer_order.append({"name": name, "is_copper": is_copper, "role": role})
+            seen_names.add(key)
+
+    attr_by_layer: dict[str, dict[str, str]] = {}
+    for p, txt in entries.items():
+        m = re.search(r"/layers/([^/]+)/attrlist(?:\.[^/]+)?$", p.replace("\\", "/"), re.IGNORECASE)
+        if not m:
+            continue
+        lname = m.group(1)
+        attr_by_layer[lname.lower()] = _parse_odb_attrlist(txt)
+        if lname.lower() not in seen_names:
+            a = attr_by_layer[lname.lower()]
+            role_src = " ".join([a.get("type", ""), a.get("layer_type", ""), lname]).lower()
+            is_copper = not any(k in role_src for k in ("dielectric", "core", "prepreg", "insulator"))
+            role = "Dielectric" if not is_copper else ("Plane" if any(k in role_src for k in ("plane", "power", "ground", "gnd", "pwr")) else "Signal")
+            layer_order.append({"name": lname, "is_copper": is_copper, "role": role})
+            seen_names.add(lname.lower())
+
+    if not layer_order:
+        raise ValueError("No recognizable layer definitions found in ODB++ source")
+
+    rows: list[dict[str, object]] = []
+    for layer in layer_order:
+        name = str(layer["name"])
+        key = name.lower()
+        attrs = attr_by_layer.get(key, {})
+        is_copper = bool(layer["is_copper"])
+        role = str(layer["role"])
+
+        thick_um = None
+        for tk in ("thickness", "thick", "dielectric_thickness", "copper_thickness"):
+            if tk in attrs:
+                thick_um = _odb_length_to_um(attrs[tk])
+                if thick_um is not None:
+                    break
+        if thick_um is None:
+            thick_um = 35.0 if is_copper else 100.0
+            warnings.append(f"Layer '{name}': missing thickness, defaulted to {thick_um} um")
+
+        er = 1.0 if is_copper else 4.0
+        tand = 0.0 if is_copper else 0.02
+        for ek in ("er", "eps", "epsilon", "dk", "dielectric_constant"):
+            if ek in attrs:
+                try:
+                    er = float(attrs[ek])
+                    break
+                except Exception:
+                    pass
+        for tk in ("tand", "loss_tangent", "df", "dissipation_factor"):
+            if tk in attrs:
+                try:
+                    tand = float(attrs[tk])
+                    break
+                except Exception:
+                    pass
+
+        net = str(attrs.get("net", attrs.get("net_name", ""))).strip()
+        if not net and is_copper and role == "Plane":
+            name_low = name.lower()
+            if any(tag in name_low for tag in ("gnd", "ground")):
+                net = "GND"
+            elif any(tag in name_low for tag in ("pwr", "power", "vcc", "vdd")):
+                net = "PWR"
+
+        rows.append(
+            {
+                "name": name,
+                "thickness_um": float(max(thick_um, 0.001)),
+                "is_copper": is_copper,
+                "role": role,
+                "net": net,
+                "er": float(er),
+                "tand": float(tand),
+                "material_id": "COPPER" if is_copper else "DIEL_FR4",
+            }
+        )
+
+    return rows, warnings
+
+
+def _xml_local_name(tag: str) -> str:
+    if not tag:
+        return ""
+    if "}" in tag:
+        return tag.rsplit("}", 1)[-1].lower()
+    return tag.lower()
+
+
+def _ipc2581_read_xml_documents(source_path: str | Path) -> list[tuple[str, str]]:
+    src = Path(source_path)
+    docs: list[tuple[str, str]] = []
+
+    def _maybe_add(name: str, data: bytes):
+        if not name:
+            return
+        norm = name.replace("\\", "/").lstrip("./")
+        low = norm.lower()
+        if not low.endswith((".xml", ".ipc", ".ipc2581")):
+            return
+        for enc in ("utf-8", "utf-16", "latin-1"):
+            try:
+                docs.append((norm, data.decode(enc)))
+                return
+            except Exception:
+                continue
+
+    if src.is_dir():
+        for p in src.rglob("*"):
+            if not p.is_file():
+                continue
+            try:
+                _maybe_add(str(p.relative_to(src)), p.read_bytes())
+            except Exception:
+                continue
+        return docs
+
+    low = src.name.lower()
+    if low.endswith((".xml", ".ipc", ".ipc2581")):
+        try:
+            docs.append((src.name, src.read_text(encoding="utf-8", errors="ignore")))
+        except Exception:
+            docs.append((src.name, src.read_text(encoding="latin-1", errors="ignore")))
+        return docs
+
+    if low.endswith((".tgz", ".tar.gz", ".tar")):
+        with tarfile.open(src, "r:*") as tf:
+            for m in tf.getmembers():
+                if not m.isfile():
+                    continue
+                f = tf.extractfile(m)
+                if f is None:
+                    continue
+                _maybe_add(m.name, f.read())
+        return docs
+
+    if low.endswith(".zip"):
+        with zipfile.ZipFile(src, "r") as zf:
+            for name in zf.namelist():
+                if name.endswith("/"):
+                    continue
+                try:
+                    _maybe_add(name, zf.read(name))
+                except Exception:
+                    continue
+        return docs
+
+    raise ValueError("Unsupported IPC-2581B source. Select folder, XML, or archive (.tgz/.tar.gz/.tar/.zip)")
+
+
+def _parse_ipc2581_stackup(source_path: str | Path) -> tuple[list[dict[str, object]], list[str]]:
+    docs = _ipc2581_read_xml_documents(source_path)
+    if not docs:
+        raise ValueError("No XML documents found in IPC-2581B source")
+
+    roots: list[tuple[str, ET.Element]] = []
+    for name, text in docs:
+        try:
+            roots.append((name, ET.fromstring(text)))
+        except Exception:
+            continue
+    if not roots:
+        raise ValueError("No parseable XML documents found in IPC-2581B source")
+
+    warnings: list[str] = []
+    candidates: list[dict[str, object]] = []
+    idx = 0
+
+    for _, root in roots:
+        for el in root.iter():
+            lname = _xml_local_name(el.tag)
+            attrs = {str(k).lower(): str(v) for k, v in el.attrib.items()}
+
+            if "stackup" not in lname and "layer" not in lname:
+                continue
+
+            name = (
+                attrs.get("layerorgroupref")
+                or attrs.get("layerref")
+                or attrs.get("layer")
+                or attrs.get("layer_name")
+                or attrs.get("layername")
+                or attrs.get("name")
+                or attrs.get("id")
+            )
+            if not name:
+                continue
+
+            thickness_raw = (
+                attrs.get("thickness")
+                or attrs.get("thicknessvalue")
+                or attrs.get("thick")
+            )
+            thick_um = _odb_length_to_um(thickness_raw) if thickness_raw else None
+
+            role_text = " ".join(
+                [
+                    lname,
+                    attrs.get("type", ""),
+                    attrs.get("layerfunction", ""),
+                    attrs.get("function", ""),
+                    attrs.get("usage", ""),
+                    name,
+                ]
+            ).lower()
+            is_copper = not any(k in role_text for k in ("dielectric", "core", "prepreg", "insulator"))
+            if any(k in role_text for k in ("signal", "plane", "ground", "power", "metal", "copper")):
+                is_copper = True
+            role = "Dielectric" if not is_copper else (
+                "Plane" if any(k in role_text for k in ("plane", "ground", "gnd", "power", "pwr")) else "Signal"
+            )
+
+            er = 1.0 if is_copper else 4.0
+            tand = 0.0 if is_copper else 0.02
+            for ek in ("er", "eps", "epsilon", "dk", "dielectric_constant"):
+                if ek in attrs:
+                    try:
+                        er = float(attrs[ek])
+                        break
+                    except Exception:
+                        pass
+            for tk in ("tand", "df", "loss_tangent", "dissipation_factor"):
+                if tk in attrs:
+                    try:
+                        tand = float(attrs[tk])
+                        break
+                    except Exception:
+                        pass
+
+            net = (attrs.get("net") or attrs.get("netname") or attrs.get("net_name") or "").strip()
+            if not net and is_copper and role == "Plane":
+                name_low = name.lower()
+                if any(tag in name_low for tag in ("gnd", "ground")):
+                    net = "GND"
+                elif any(tag in name_low for tag in ("pwr", "power", "vcc", "vdd")):
+                    net = "PWR"
+
+            seq_raw = attrs.get("sequence") or attrs.get("order") or attrs.get("index")
+            seq_val = float("nan")
+            if seq_raw:
+                try:
+                    seq_val = float(seq_raw)
+                except Exception:
+                    pass
+
+            candidates.append(
+                {
+                    "name": name,
+                    "thickness_um": thick_um,
+                    "is_copper": is_copper,
+                    "role": role,
+                    "net": net,
+                    "er": er,
+                    "tand": tand,
+                    "seq": seq_val,
+                    "idx": idx,
+                }
+            )
+            idx += 1
+
+    if not candidates:
+        raise ValueError("No recognizable layer definitions found in IPC-2581B source")
+
+    by_name: dict[str, dict[str, object]] = {}
+    for c in candidates:
+        key = str(c["name"]).strip().lower()
+        if not key:
+            continue
+        prev = by_name.get(key)
+        if prev is None:
+            by_name[key] = c
+            continue
+        prev_thick = prev.get("thickness_um")
+        curr_thick = c.get("thickness_um")
+        if prev_thick is None and curr_thick is not None:
+            by_name[key] = c
+
+    unique_layers = list(by_name.values())
+
+    def _sort_key(item: dict[str, object]) -> tuple[int, float, int]:
+        seq = item.get("seq")
+        if isinstance(seq, float) and not math.isnan(seq):
+            return (0, seq, int(item.get("idx", 0)))
+        return (1, 0.0, int(item.get("idx", 0)))
+
+    unique_layers.sort(key=_sort_key)
+
+    rows: list[dict[str, object]] = []
+    for layer in unique_layers:
+        name = str(layer["name"])
+        is_copper = bool(layer["is_copper"])
+        thick_um = layer.get("thickness_um")
+        if not isinstance(thick_um, (int, float)) or thick_um <= 0:
+            thick_um = 35.0 if is_copper else 100.0
+            warnings.append(f"Layer '{name}': missing thickness, defaulted to {thick_um} um")
+
+        rows.append(
+            {
+                "name": name,
+                "thickness_um": float(max(float(thick_um), 0.001)),
+                "is_copper": is_copper,
+                "role": str(layer["role"]),
+                "net": str(layer["net"]),
+                "er": float(layer["er"]),
+                "tand": float(layer["tand"]),
+                "material_id": "COPPER" if is_copper else "DIEL_FR4",
+            }
+        )
+
+    return rows, warnings
+
+
+def _stackup_row_text(row: dict[str, object]) -> tuple[str, str, str]:
+    name = str(row.get("name", "")).strip().lower()
+    net = str(row.get("net", "")).strip().lower()
+    role = str(row.get("role", "")).strip().lower()
+    return name, net, role
+
+
+def _is_ground_copper_row(row: dict[str, object]) -> bool:
+    if not row.get("is_copper", False):
+        return False
+    name, net, role = _stackup_row_text(row)
+    if net in ("gnd", "ground") or any(tag in net for tag in ("gnd", "ground")):
+        return True
+    if any(tag in name for tag in ("gnd", "ground")):
+        return True
+    return role == "plane" and any(tag in name or tag in net for tag in ("gnd", "ground"))
+
+
+def _is_power_copper_row(row: dict[str, object]) -> bool:
+    if not row.get("is_copper", False):
+        return False
+    if _is_ground_copper_row(row):
+        return False
+    name, net, role = _stackup_row_text(row)
+    power_tags = ("pwr", "power", "vcc", "vdd")
+    if any(tag in net for tag in power_tags):
+        return True
+    if any(tag in name for tag in power_tags):
+        return True
+    return role == "plane" and any(tag in name or tag in net for tag in power_tags)
+
+
+def _is_reference_copper_row(row: dict[str, object]) -> bool:
+    return _is_ground_copper_row(row) or _is_power_copper_row(row)
+
+
+def _is_signal_copper_row(row: dict[str, object]) -> bool:
+    return bool(row.get("is_copper", False)) and not _is_reference_copper_row(row)
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  Module-level 3-D mesh helpers
@@ -529,6 +1009,8 @@ class ViaWindow(QMainWindow):
         self._scene_gl_items: dict[str, list] = {}
         self._scene_base_alpha_by_item_id: dict[int, float] = {}
         self._scene_transparency_pct_by_key: dict[str, int] = {}
+        self._defer_initial_3d = True
+        self._is_rebuilding_3d = False
 
         self._material_catalog = _build_emerge_material_catalog()
         self._material_by_id = {str(m["id"]): m for m in self._material_catalog}
@@ -623,8 +1105,9 @@ class ViaWindow(QMainWindow):
         self._name_edit.textChanged.connect(self._on_name_changed)
 
         # â”€â”€ initial 3-D scene â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        self._defer_initial_3d = False
         if _GL_AVAILABLE:
-            self._rebuild_3d()
+            QTimer.singleShot(0, self._rebuild_3d)
 
     def _on_name_changed(self, text: str) -> None:
         title = text.strip() or f"Via Analysis #{self.window_number}"
@@ -755,19 +1238,27 @@ class ViaWindow(QMainWindow):
         hdr.resizeSection(6, 55)
         hdr.resizeSection(7, 220)
         self._stackup_table.setMinimumHeight(200)
+        self._stackup_table.itemChanged.connect(self._stackup_changed)
         vbox.addWidget(self._stackup_table)
 
         btn_row = QHBoxLayout()
-        self._btn_add_layer    = QPushButton("Add")
+        self._btn_import_cad_stackup = QPushButton("Import CAD Stackup")
+        self._btn_add_layer = QPushButton("Add")
         self._btn_remove_layer = QPushButton("Remove")
-        self._btn_move_up      = QPushButton("Move Up")
-        self._btn_move_down    = QPushButton("Move Down")
-        for b in (self._btn_add_layer, self._btn_remove_layer,
-                  self._btn_move_up, self._btn_move_down):
+        self._btn_move_up = QPushButton("Move Up")
+        self._btn_move_down = QPushButton("Move Down")
+        for b in (
+            self._btn_import_cad_stackup,
+            self._btn_add_layer,
+            self._btn_remove_layer,
+            self._btn_move_up,
+            self._btn_move_down,
+        ):
             btn_row.addWidget(b)
         vbox.addLayout(btn_row)
         vbox.addStretch(1)
 
+        self._btn_import_cad_stackup.clicked.connect(self._stackup_import_cad_stackup)
         self._btn_add_layer.clicked.connect(self._stackup_add)
         self._btn_remove_layer.clicked.connect(self._stackup_remove)
         self._btn_move_up.clicked.connect(self._stackup_move_up)
@@ -778,31 +1269,46 @@ class ViaWindow(QMainWindow):
         # Populate default stackup
         self._load_stackup_rows(_DEFAULT_STACKUP)
 
+    def _make_progress_dialog(self, title: str, label: str, maximum: int) -> QProgressDialog:
+        dlg = QProgressDialog(label, None, 0, max(1, maximum), self)
+        dlg.setWindowTitle(title)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(True)
+        dlg.setAutoReset(True)
+        dlg.setValue(0)
+        QApplication.processEvents()
+        return dlg
+
     def _load_stackup_rows(self, rows: list[dict]):
         """Rebuild the stackup table from a list of dicts."""
         self._suppress_signals = True
-        self._stackup_table.setRowCount(0)
-        for row in rows:
-            is_copper = row.get("is_copper", True)
-            role = row.get("role")
-            if not role:
-                if not is_copper:
-                    role = "Dielectric"
-                elif any(tag in row.get("name", "").lower() for tag in ("gnd", "ground", "pwr", "power", "plane")):
-                    role = "Plane"
-                else:
-                    role = "Signal"
-            net = row.get("net", "")
-            if not net and is_copper and role == "Plane":
-                name_lower = row.get("name", "").lower()
-                if any(tag in name_lower for tag in ("gnd", "ground")):
-                    net = "GND"
-                elif any(tag in name_lower for tag in ("pwr", "power", "vcc", "vdd")):
-                    net = "PWR"
-            self._stackup_insert_row(
-                row["name"], row["thickness_um"], is_copper,
-                role, net, row["er"], row["tand"], str(row.get("material_id", ""))
-            )
+        self._stackup_table.setUpdatesEnabled(False)
+        try:
+            self._stackup_table.setRowCount(0)
+            for row in rows:
+                is_copper = row.get("is_copper", True)
+                role = row.get("role")
+                if not role:
+                    if not is_copper:
+                        role = "Dielectric"
+                    elif any(tag in row.get("name", "").lower() for tag in ("gnd", "ground", "pwr", "power", "plane")):
+                        role = "Plane"
+                    else:
+                        role = "Signal"
+                net = row.get("net", "")
+                if not net and is_copper and role == "Plane":
+                    name_lower = row.get("name", "").lower()
+                    if any(tag in name_lower for tag in ("gnd", "ground")):
+                        net = "GND"
+                    elif any(tag in name_lower for tag in ("pwr", "power", "vcc", "vdd")):
+                        net = "PWR"
+                self._stackup_insert_row(
+                    row["name"], row["thickness_um"], is_copper,
+                    role, net, row["er"], row["tand"], str(row.get("material_id", ""))
+                )
+        finally:
+            self._stackup_table.setUpdatesEnabled(True)
         self._suppress_signals = False
         self._stackup_changed()
 
@@ -849,9 +1355,6 @@ class ViaWindow(QMainWindow):
         tbl.setCellWidget(row, 7, mat_combo)
 
         self._apply_material_to_row(row, update_cells=not bool(material_id))
-
-        # Connect item changes
-        tbl.itemChanged.connect(self._stackup_changed)
 
     def _read_stackup(self) -> list[dict]:
         """Read current stackup from the table widget."""
@@ -917,6 +1420,9 @@ class ViaWindow(QMainWindow):
     def _copper_layer_names(self) -> list[str]:
         return [r["name"] for r in self._read_stackup() if r["is_copper"]]
 
+    def _ground_copper_layer_names(self) -> list[str]:
+        return [r["name"] for r in self._read_stackup() if _is_ground_copper_row(r)]
+
     def _stackup_changed(self, *args, rebuild_3d: bool | None = None):
         if self._suppress_signals:
             return
@@ -929,12 +1435,170 @@ class ViaWindow(QMainWindow):
         if hasattr(self, '_via_from_combo'):
             self._update_via_layer_combos()
         self.project_modified.emit()
+        if getattr(self, "_defer_initial_3d", False):
+            rebuild_3d = False
         if rebuild_3d and hasattr(self, '_chk_autorefresh') and self._chk_autorefresh.isChecked() and _GL_AVAILABLE:
             self._rebuild_3d()
 
     def _stackup_add(self):
         self._stackup_insert_row("New Layer", 100.0, False, "Dielectric", "", 4.2, 0.02)
         self._stackup_changed()
+
+    def _stackup_parse_cad_stackup(self, source_path: str) -> tuple[str, list[dict[str, object]], list[str]]:
+        p = Path(source_path)
+        lower = p.name.lower()
+
+        candidates: list[tuple[str, object]] = []
+        if lower.endswith((".xml", ".ipc", ".ipc2581")):
+            candidates = [("IPC-2581B", _parse_ipc2581_stackup), ("ODB++", _parse_odb_stackup)]
+        elif lower.endswith((".tgz", ".tar.gz", ".tar", ".zip")):
+            candidates = [("ODB++", _parse_odb_stackup), ("IPC-2581B", _parse_ipc2581_stackup)]
+        else:
+            candidates = [("ODB++", _parse_odb_stackup), ("IPC-2581B", _parse_ipc2581_stackup)]
+
+        errors: list[str] = []
+        for fmt_name, parser in candidates:
+            try:
+                rows, warnings = parser(source_path)
+                if rows:
+                    return fmt_name, rows, warnings
+            except Exception as exc:
+                errors.append(f"{fmt_name}: {exc}")
+
+        raise ValueError("Auto-detect failed. " + " | ".join(errors))
+
+    def _stackup_import_cad_stackup(self):
+        from PySide6.QtWidgets import QFileDialog
+
+        start_dir = str(Path.home())
+        source_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select CAD stackup folder (ODB++ or IPC-2581B)",
+            start_dir,
+        )
+        if not source_path:
+            source_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select CAD stackup file/archive",
+                start_dir,
+                "CAD stackup (*.xml *.ipc *.ipc2581 *.tgz *.tar.gz *.tar *.zip);;All files (*.*)",
+            )
+        if not source_path:
+            return
+
+        try:
+            fmt_name, rows, warnings = self._stackup_parse_cad_stackup(source_path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Import CAD Stackup", f"Unable to parse stackup:\n{exc}")
+            return
+
+        if not rows:
+            QMessageBox.warning(self, "Import CAD Stackup", "No stackup layers were found in the selected source.")
+            return
+
+        self._load_stackup_rows(rows)
+
+        if warnings:
+            preview = "\n".join(warnings[:6])
+            if len(warnings) > 6:
+                preview += f"\n... (+{len(warnings) - 6} more)"
+            QMessageBox.information(
+                self,
+                "Import CAD Stackup",
+                f"Detected format: {fmt_name}.\nImported {len(rows)} layers.\n\nNotes:\n{preview}",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Import CAD Stackup",
+                f"Detected format: {fmt_name}.\nImported {len(rows)} layers.",
+            )
+
+    def _stackup_import_odb(self):
+        from PySide6.QtWidgets import QFileDialog
+
+        start_dir = str(Path.home())
+        source_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select ODB++ folder",
+            start_dir,
+        )
+        if not source_path:
+            source_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select ODB++ archive",
+                start_dir,
+                "ODB++ archive (*.tgz *.tar.gz *.tar *.zip);;All files (*.*)",
+            )
+        if not source_path:
+            return
+
+        try:
+            rows, warnings = _parse_odb_stackup(source_path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Import ODB++", f"Unable to parse ODB++ stackup:\n{exc}")
+            return
+
+        if not rows:
+            QMessageBox.warning(self, "Import ODB++", "No stackup layers were found in the selected ODB++ source.")
+            return
+
+        self._load_stackup_rows(rows)
+
+        if warnings:
+            preview = "\n".join(warnings[:6])
+            if len(warnings) > 6:
+                preview += f"\n... (+{len(warnings) - 6} more)"
+            QMessageBox.information(
+                self,
+                "Import ODB++",
+                f"Imported {len(rows)} layers from ODB++.\n\nNotes:\n{preview}",
+            )
+        else:
+            QMessageBox.information(self, "Import ODB++", f"Imported {len(rows)} layers from ODB++.")
+
+    def _stackup_import_ipc2581(self):
+        from PySide6.QtWidgets import QFileDialog
+
+        start_dir = str(Path.home())
+        source_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select IPC-2581B folder",
+            start_dir,
+        )
+        if not source_path:
+            source_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select IPC-2581B file or archive",
+                start_dir,
+                "IPC-2581B (*.xml *.ipc *.ipc2581 *.tgz *.tar.gz *.tar *.zip);;All files (*.*)",
+            )
+        if not source_path:
+            return
+
+        try:
+            rows, warnings = _parse_ipc2581_stackup(source_path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Import IPC-2581B", f"Unable to parse IPC-2581B stackup:\n{exc}")
+            return
+
+        if not rows:
+            QMessageBox.warning(self, "Import IPC-2581B", "No stackup layers were found in the selected IPC-2581B source.")
+            return
+
+        self._load_stackup_rows(rows)
+
+        if warnings:
+            preview = "\n".join(warnings[:6])
+            if len(warnings) > 6:
+                preview += f"\n... (+{len(warnings) - 6} more)"
+            QMessageBox.information(
+                self,
+                "Import IPC-2581B",
+                f"Imported {len(rows)} layers from IPC-2581B.\n\nNotes:\n{preview}",
+            )
+        else:
+            QMessageBox.information(self, "Import IPC-2581B", f"Imported {len(rows)} layers from IPC-2581B.")
 
     def _stackup_remove(self):
         row = self._stackup_table.currentRow()
@@ -1030,6 +1694,7 @@ class ViaWindow(QMainWindow):
     def _update_via_layer_combos(self):
         self._suppress_signals = True
         copper_names = self._copper_layer_names()
+        ground_names = self._ground_copper_layer_names()
 
         old_from = self._via_from_combo.currentText()
         old_to   = self._via_to_combo.currentText()
@@ -1056,21 +1721,21 @@ class ViaWindow(QMainWindow):
 
         if hasattr(self, "_stitch_from_combo") and hasattr(self, "_stitch_to_combo"):
             self._stitch_from_combo.clear()
-            self._stitch_from_combo.addItems(copper_names)
+            self._stitch_from_combo.addItems(ground_names)
             self._stitch_to_combo.clear()
-            self._stitch_to_combo.addItems(copper_names)
+            self._stitch_to_combo.addItems(ground_names)
 
             stitch_from_idx = self._stitch_from_combo.findText(old_stitch_from)
             if stitch_from_idx >= 0:
                 self._stitch_from_combo.setCurrentIndex(stitch_from_idx)
-            elif len(copper_names) > 0:
+            elif len(ground_names) > 0:
                 self._stitch_from_combo.setCurrentIndex(0)
 
             stitch_to_idx = self._stitch_to_combo.findText(old_stitch_to)
             if stitch_to_idx >= 0:
                 self._stitch_to_combo.setCurrentIndex(stitch_to_idx)
-            elif len(copper_names) > 1:
-                self._stitch_to_combo.setCurrentIndex(len(copper_names) - 1)
+            elif len(ground_names) > 1:
+                self._stitch_to_combo.setCurrentIndex(len(ground_names) - 1)
 
         self._suppress_signals = False
         self._update_stub_combo()
@@ -1127,8 +1792,8 @@ class ViaWindow(QMainWindow):
 
         self._stitch_from_combo = QComboBox()
         self._stitch_to_combo = QComboBox()
-        form.addRow("From copper layer:", self._stitch_from_combo)
-        form.addRow("To copper layer:", self._stitch_to_combo)
+        form.addRow("From GND layer:", self._stitch_from_combo)
+        form.addRow("To GND layer:", self._stitch_to_combo)
 
         self._stitch_n  = QSpinBox()
         self._stitch_n.setRange(1, 64)
@@ -1356,7 +2021,21 @@ class ViaWindow(QMainWindow):
         global_grp = QGroupBox("Global Mesh")
         global_form = QFormLayout(global_grp)
         self._res_mm = self._mk_dspin(0.01, 2.0, 0.25, "", decimals=2)
+        self._curved_boundary_n = QSpinBox()
+        self._curved_boundary_n.setRange(1, 128)
+        self._curved_boundary_n.setValue(12)
+        self._curved_boundary_n.setToolTip(
+            "Controls curved-surface discretization for the mesher. "
+            "Higher N improves curvature accuracy but increases mesh size and runtime."
+        )
         global_form.addRow("Mesh resolution (fraction of lambda max):", self._res_mm)
+        global_form.addRow("Curved boundary meshing (N):", self._curved_boundary_n)
+
+        curved_hint = QLabel(
+            "Curved boundary meshing (N): low values are faster; high values better approximate cylinders/arcs."
+        )
+        curved_hint.setWordWrap(True)
+        global_form.addRow("", curved_hint)
 
         local_grp = QGroupBox("Local Mesh Subdivision")
         local_form = QFormLayout(local_grp)
@@ -1406,6 +2085,7 @@ class ViaWindow(QMainWindow):
         self._tabs.addTab(w, "Mesh")
 
         self._res_mm.valueChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
+        self._curved_boundary_n.valueChanged.connect(lambda *_: self._param_changed(rebuild_3d=False))
         self._mesh_local_enable.toggled.connect(self._mesh_controls_changed)
         self._mesh_controls_changed()
 
@@ -1903,6 +2583,8 @@ class ViaWindow(QMainWindow):
     def _rebuild_3d(self):
         if not _GL_AVAILABLE or self._gl_view is None:
             return
+        if self._is_rebuilding_3d:
+            return
 
         # Clear all items
         for item in list(self._gl_view.items):
@@ -1933,8 +2615,36 @@ class ViaWindow(QMainWindow):
             z_cur += h
 
         copper_layers = [(i, r) for i, r in enumerate(stackup) if r["is_copper"]]
+        reference_layers = [(i, r) for i, r in enumerate(stackup) if _is_reference_copper_row(r)]
+        ground_layers = [(i, r) for i, r in enumerate(stackup) if _is_ground_copper_row(r)]
         if not copper_layers:
             return
+
+        self._is_rebuilding_3d = True
+
+        stitch_coords = self._stitching_coordinates_mm() if self._stitch_enable.isChecked() else []
+        precompute_targets = sum(1 for r in stackup if _is_reference_copper_row(r))
+        render_targets = len(stackup)
+        progress_total = max(1, 6 + precompute_targets + render_targets + len(stitch_coords))
+        progress = self._make_progress_dialog("Loading Via Designer", "Building 3D scene...", progress_total)
+        progress_value = 0
+        phase3_total = max(1, render_targets + 3 + len(stitch_coords))
+        phase3_done = 0
+
+        def _tick(step: int = 1, text: str | None = None):
+            nonlocal progress_value
+            progress_value = min(progress_total, progress_value + step)
+            if text is not None:
+                progress.setLabelText(text)
+            progress.setValue(progress_value)
+            QApplication.processEvents()
+
+        def _tick_phase3(task_label: str):
+            nonlocal phase3_done
+            phase3_done = min(phase3_total, phase3_done + 1)
+            _tick(text=f"Phase 3/3 - {task_label} ({phase3_done}/{phase3_total})")
+
+        _tick(text="Phase 1/3 - Parsing stackup...")
 
         via_from_idx_c = self._via_from_combo.currentIndex()
         via_to_idx_c   = self._via_to_combo.currentIndex()
@@ -1951,23 +2661,27 @@ class ViaWindow(QMainWindow):
             from_stack_idx, to_stack_idx = to_stack_idx, from_stack_idx
 
         stitch_from_idx_c = self._stitch_from_combo.currentIndex() if hasattr(self, "_stitch_from_combo") else 0
-        stitch_to_idx_c = self._stitch_to_combo.currentIndex() if hasattr(self, "_stitch_to_combo") else len(copper_layers) - 1
-        if stitch_from_idx_c < 0:
-            stitch_from_idx_c = 0
-        if stitch_to_idx_c < 0:
-            stitch_to_idx_c = len(copper_layers) - 1
-        stitch_from_idx_c = min(stitch_from_idx_c, len(copper_layers) - 1)
-        stitch_to_idx_c = min(stitch_to_idx_c, len(copper_layers) - 1)
-        if stitch_from_idx_c > stitch_to_idx_c:
-            stitch_from_idx_c, stitch_to_idx_c = stitch_to_idx_c, stitch_from_idx_c
+        stitch_to_idx_c = self._stitch_to_combo.currentIndex() if hasattr(self, "_stitch_to_combo") else len(ground_layers) - 1
+        stitch_from_stack_idx = -1
+        stitch_to_stack_idx = -1
+        if ground_layers:
+            if stitch_from_idx_c < 0:
+                stitch_from_idx_c = 0
+            if stitch_to_idx_c < 0:
+                stitch_to_idx_c = len(ground_layers) - 1
+            stitch_from_idx_c = min(stitch_from_idx_c, len(ground_layers) - 1)
+            stitch_to_idx_c = min(stitch_to_idx_c, len(ground_layers) - 1)
+            if stitch_from_idx_c > stitch_to_idx_c:
+                stitch_from_idx_c, stitch_to_idx_c = stitch_to_idx_c, stitch_from_idx_c
 
-        stitch_from_stack_idx = copper_layers[stitch_from_idx_c][0]
-        stitch_to_stack_idx = copper_layers[stitch_to_idx_c][0]
+            stitch_from_stack_idx = ground_layers[stitch_from_idx_c][0]
+            stitch_to_stack_idx = ground_layers[stitch_to_idx_c][0]
 
         signal_landing_layers = {from_stack_idx, to_stack_idx}
 
         via_z_top = layer_z0[from_stack_idx]
         via_z_bot = layer_z1[to_stack_idx]
+        _tick(text="Phase 1/3 - Resolving via and reference layers...")
 
         drill_r  = self._drill_um.value()  / 2.0 / 1000.0   # mm
         pad_r    = self._pad_um.value()    / 2.0 / 1000.0
@@ -1990,8 +2704,10 @@ class ViaWindow(QMainWindow):
             return max(apad_r, min_radius_mm)
 
         plane_holes_by_layer: dict[int, list[tuple[float, float, float]]] = {}
+        precompute_done = 0
+        _tick(text="Phase 2/3 - Precomputing clearances...")
         for i, r in enumerate(stackup):
-            if not (r["is_copper"] and str(r.get("role", "Signal")) == "Plane"):
+            if not _is_reference_copper_row(r):
                 continue
             layer_holes: list[tuple[float, float, float]] = []
             in_signal_span = from_stack_idx < i < to_stack_idx
@@ -2003,23 +2719,33 @@ class ViaWindow(QMainWindow):
 
             if self._stitch_enable.isChecked() and stitch_from_stack_idx < i < stitch_to_stack_idx:
                 s_drill = self._stitch_drill.value() / 2.0 / 1000.0
-                # Plane layers: drill-size hole only so barrel sits flush (connected, no gap)
-                for sx, sy in self._stitching_coordinates_mm():
-                    layer_holes.append((sx, sy, s_drill))
+                if _is_ground_copper_row(r):
+                    # GND layers: drill-size hole only so stitching barrel stays connected.
+                    for sx, sy in stitch_coords:
+                        layer_holes.append((sx, sy, s_drill))
+                else:
+                    # Power layers: keep an antipad around the stitching barrel.
+                    s_antipad = max(apad_r, s_drill)
+                    for sx, sy in stitch_coords:
+                        layer_holes.append((sx, sy, s_antipad))
 
             if layer_holes:
                 plane_holes_by_layer[i] = layer_holes
+            precompute_done += 1
+            _tick(text=f"Phase 2/3 - Clearances {precompute_done}/{max(1, precompute_targets)}")
 
         # Draw all layers as rectangular boxes. Antipad cavities on plane layers
         # are shown separately and centered on the via coordinates.
+        _tick(text=f"Phase 3/3 - Rendering layers (0/{phase3_total})")
         for i, r in enumerate(stackup):
-            if r["is_copper"] and i in signal_landing_layers:
-                # Feed layers must show only landing pads + traces.
+            if _is_signal_copper_row(r):
+                # Signal copper layers are not shown as bulk copper in 3D.
+                _tick_phase3("Rendering layers")
                 continue
             z0 = layer_z0[i]
             z1 = layer_z1[i]
             color = self._layer_color(i, r["is_copper"])
-            if r["is_copper"] and str(r.get("role", "Signal")) == "Plane" and i in plane_holes_by_layer:
+            if _is_reference_copper_row(r) and i in plane_holes_by_layer:
                 verts, faces = _perforated_plane_mesh(hw, hd, z0, z1, plane_holes_by_layer[i])
                 if verts is None or faces is None:
                     verts, faces = _box_mesh(hw, hd, z0, z1)
@@ -2029,6 +2755,7 @@ class ViaWindow(QMainWindow):
                                   color=color, smooth=False, drawEdges=True)
             mesh.setGLOptions("additive" if not r["is_copper"] else "opaque")
             self._register_scene_mesh("Layers", f"layer/{i}", r["name"], mesh)
+            _tick_phase3("Rendering layers")
 
         def _add_via(
             cx: float,
@@ -2079,25 +2806,38 @@ class ViaWindow(QMainWindow):
                             self._register_scene_mesh(scene_group, scene_key, scene_label, pmesh)
 
         # Main via
-        _add_via(0.0, 0.0, via_z_top, via_z_bot, drill_r, pad_r, apad_r, signal_landing_layers,
-             scene_key="via/main", scene_label="Main Via")
+        _add_via(
+            0.0,
+            0.0,
+            via_z_top,
+            via_z_bot,
+            drill_r,
+            pad_r,
+            apad_r,
+            signal_landing_layers,
+            scene_key="via/main",
+            scene_label="Main Via",
+        )
+        _tick_phase3("Rendering vias")
 
         # Stub
         if stub_stack_idx is not None:
-                stub_z_top = layer_z1[to_stack_idx]
-                stub_z_bot = layer_z1[stub_stack_idx]
-                stub_color = (0.75, 0.75, 0.75, 0.7)
-                _add_via(0.0, 0.0, stub_z_top, stub_z_bot, drill_r, pad_r, apad_r, {to_stack_idx}, color=stub_color,
-                         scene_key="via/stub_main", scene_label="Stub Via")
-                # Differential stub: mirror the stub barrel for the second via
-                if self._radio_diff.isChecked():
-                    _add_via(0.0, diff_offset_mm, stub_z_top, stub_z_bot, drill_r, pad_r, apad_r, {to_stack_idx}, color=stub_color,
-                             scene_key="via/stub_diff", scene_label="Stub Via (Diff)")
+            stub_z_top = layer_z1[to_stack_idx]
+            stub_z_bot = layer_z1[stub_stack_idx]
+            stub_color = (0.75, 0.75, 0.75, 0.7)
+            _add_via(0.0, 0.0, stub_z_top, stub_z_bot, drill_r, pad_r, apad_r, {to_stack_idx}, color=stub_color,
+                     scene_key="via/stub_main", scene_label="Stub Via")
+            # Differential stub: mirror the stub barrel for the second via
+            if self._radio_diff.isChecked():
+                _add_via(0.0, diff_offset_mm, stub_z_top, stub_z_bot, drill_r, pad_r, apad_r, {to_stack_idx}, color=stub_color,
+                         scene_key="via/stub_diff", scene_label="Stub Via (Diff)")
+            _tick_phase3("Rendering stub")
 
         # Differential second via
         if self._radio_diff.isChecked():
             _add_via(0.0, diff_offset_mm, via_z_top, via_z_bot, drill_r, pad_r, apad_r, signal_landing_layers,
                      scene_key="via/diff", scene_label="Differential Via")
+            _tick_phase3("Rendering differential via")
 
         # Feed geometry preview on via landing layers.
         # Differential mode shows all 4 feeds (1,2 inputs and 3,4 outputs).
@@ -2143,9 +2883,10 @@ class ViaWindow(QMainWindow):
             _add_feed_preview(pidx, from_stack_idx, "in", input_layer_col)
         for pidx in output_ports:
             _add_feed_preview(pidx, to_stack_idx, "out", output_layer_col)
+        _tick_phase3("Rendering feeds")
 
         # Stitching vias
-        if self._stitch_enable.isChecked():
+        if self._stitch_enable.isChecked() and stitch_from_stack_idx >= 0 and stitch_to_stack_idx >= 0:
             s_drill = self._stitch_drill.value() / 2.0 / 1000.0
             s_pad = self._stitch_pad.value() / 2.0 / 1000.0
             s_antipad = max(apad_r, s_pad * 1.35)
@@ -2153,11 +2894,9 @@ class ViaWindow(QMainWindow):
             s_highlight = (0.98, 0.20, 0.20, 0.95)
             stitch_z_top = layer_z0[stitch_from_stack_idx]
             stitch_z_bot = layer_z1[stitch_to_stack_idx]
-            # Landing layers = top + bottom signal layers + all Plane layers in between
-            # Only the top/bottom signal layers get annular pads drawn.
-            # Intermediate Plane layers connect via the drill-size hole in the plane mesh â€” no extra pad ring.
+            # Landing layers are the selected GND planes at the start and end of the stitching span.
             stitch_landing_layers = {stitch_from_stack_idx, stitch_to_stack_idx}
-            for i, (sx, sy) in enumerate(self._stitching_coordinates_mm()):
+            for i, (sx, sy) in enumerate(stitch_coords):
                 is_sel = i == self._stitch_selected_row
                 color = s_highlight if is_sel else s_color
                 r_mul = 1.25 if is_sel else 1.0
@@ -2175,9 +2914,14 @@ class ViaWindow(QMainWindow):
                     scene_label=f"Stitch {i + 1}",
                     scene_group="Stitching",
                 )
+                _tick_phase3("Rendering stitching")
 
         if self._scene_tree is not None:
             self._scene_tree.expandAll()
+        progress.setValue(progress_total)
+        QApplication.processEvents()
+        progress.close()
+        self._is_rebuilding_3d = False
 
     # â”€â”€ EMerge script generation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -2385,6 +3129,7 @@ class ViaWindow(QMainWindow):
         mesh_div_feed = self._mesh_factor_sliders["feed"].value() if hasattr(self, "_mesh_factor_sliders") else 1
         mesh_div_planes = self._mesh_factor_sliders["planes"].value() if hasattr(self, "_mesh_factor_sliders") else 1
         mesh_div_stitching = self._mesh_factor_sliders["stitching"].value() if hasattr(self, "_mesh_factor_sliders") else 1
+        curved_boundary_n = self._curved_boundary_n.value() if hasattr(self, "_curved_boundary_n") else 12
         show_structure_in_emerge = self._show_structure_in_emerge.isChecked() if hasattr(self, "_show_structure_in_emerge") else True
         show_labels_in_emerge = self._show_labels_in_emerge.isChecked() if hasattr(self, "_show_labels_in_emerge") else False
         show_mesh_in_emerge = self._show_mesh_in_emerge.isChecked() if hasattr(self, "_show_mesh_in_emerge") else True
@@ -2482,6 +3227,8 @@ class ViaWindow(QMainWindow):
 
         # â”€â”€ Copper layer index mapping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         copper_layers = [(i, r) for i, r in enumerate(stackup) if r["is_copper"]]
+        reference_layers = [(i, r) for i, r in enumerate(stackup) if _is_reference_copper_row(r)]
+        ground_layers = [(i, r) for i, r in enumerate(stackup) if _is_ground_copper_row(r)]
         via_from_idx_c = self._via_from_combo.currentIndex()
         via_to_idx_c   = self._via_to_combo.currentIndex()
         if via_from_idx_c < 0: via_from_idx_c = 0
@@ -2492,13 +3239,19 @@ class ViaWindow(QMainWindow):
             via_from_idx_c, via_to_idx_c = via_to_idx_c, via_from_idx_c
 
         stitch_from_idx_c = self._stitch_from_combo.currentIndex() if hasattr(self, "_stitch_from_combo") else 0
-        stitch_to_idx_c = self._stitch_to_combo.currentIndex() if hasattr(self, "_stitch_to_combo") else max(0, len(copper_layers) - 1)
-        if stitch_from_idx_c < 0: stitch_from_idx_c = 0
-        if stitch_to_idx_c   < 0: stitch_to_idx_c   = max(0, len(copper_layers) - 1)
-        stitch_from_idx_c = min(stitch_from_idx_c, max(0, len(copper_layers) - 1))
-        stitch_to_idx_c   = min(stitch_to_idx_c,   max(0, len(copper_layers) - 1))
-        if stitch_from_idx_c > stitch_to_idx_c:
-            stitch_from_idx_c, stitch_to_idx_c = stitch_to_idx_c, stitch_from_idx_c
+        stitch_to_idx_c = self._stitch_to_combo.currentIndex() if hasattr(self, "_stitch_to_combo") else max(0, len(ground_layers) - 1)
+        if ground_layers:
+            if stitch_from_idx_c < 0: stitch_from_idx_c = 0
+            if stitch_to_idx_c   < 0: stitch_to_idx_c   = max(0, len(ground_layers) - 1)
+            stitch_from_idx_c = min(stitch_from_idx_c, max(0, len(ground_layers) - 1))
+            stitch_to_idx_c   = min(stitch_to_idx_c,   max(0, len(ground_layers) - 1))
+            if stitch_from_idx_c > stitch_to_idx_c:
+                stitch_from_idx_c, stitch_to_idx_c = stitch_to_idx_c, stitch_from_idx_c
+            stitch_from_stack_idx = ground_layers[stitch_from_idx_c][0]
+            stitch_to_stack_idx = ground_layers[stitch_to_idx_c][0]
+        else:
+            stitch_from_stack_idx = -1
+            stitch_to_stack_idx = -1
 
         # â”€â”€ Material selection and script bindings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         layer_material_entry_by_gi: dict[int, dict[str, object]] = {}
@@ -2579,9 +3332,6 @@ class ViaWindow(QMainWindow):
         z_stub_bot_mm = layer_z_mm[stub_stack_idx][1] if stub_enabled else 0.0
         stub_h_mm = (z_stub_top_mm - z_stub_bot_mm) if stub_enabled else 0.0
 
-        # Signal layer global indices (carry the feed trace)
-        signal_gi_set = {via_from_gi, via_to_gi}
-
         # â”€â”€ Physical geometry parameters (mm) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         drill_r_mm   = drill_um   / 2.0 / 1000.0
         pad_r_mm     = pad_um     / 2.0 / 1000.0
@@ -2592,7 +3342,7 @@ class ViaWindow(QMainWindow):
             signal_via_centers_mm.append((0.0, diff_offset_mm))
         plane_antipad_r_mm_by_gi: dict[int, float] = {}
         for gi, row in enumerate(stackup):
-            if row.get("is_copper") and str(row.get("role", "Signal")) == "Plane":
+            if _is_reference_copper_row(row):
                 plane_antipad_r_mm_by_gi[gi] = max(antipad_r_mm, drill_r_mm)
 
         z_entry_top_mm, z_entry_bot_mm = via_from[3], via_from[4]
@@ -2742,6 +3492,7 @@ class ViaWindow(QMainWindow):
         lines.append("mm = 0.001  # metres per mm unit")
         lines.append("")
         lines.append('m = em.Simulation(ProjectName)')
+        lines.append('model = m  # alias for clearer mesher API calls')
         _vcheck_mode = (
             self._emerge_version_check_mode.currentData()
             if hasattr(self, "_emerge_version_check_mode") else "warn"
@@ -2801,17 +3552,16 @@ class ViaWindow(QMainWindow):
             thick = r["thickness_um"] / 1000.0
             vname = f"layer_{i}"
             material_var = _get_material_var(layer_material_entry_by_gi[gi])
-            if r["is_copper"] and gi in signal_gi_set:
-                # Signal layer solids are defined by feed/pad geometry later.
-                lines.append(f"# Signal copper layer: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
-                lines.append("# (pads created and united with trace in the feed section below)")
+            if _is_signal_copper_row(r):
+                lines.append(f"# Signal copper layer omitted: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
+                lines.append("# (feed pad/trace geometry is still emitted later if this is a port layer)")
                 lines.append("")
                 continue
 
-            if r["is_copper"] and str(r.get("role", "Signal")) == "Plane":
-                lines.append(f"# Reference copper plane: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
-            elif r["is_copper"]:
-                lines.append(f"# Copper layer: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
+            if _is_ground_copper_row(r):
+                lines.append(f"# Ground reference copper plane: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
+            elif _is_power_copper_row(r):
+                lines.append(f"# Power reference copper plane: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
             else:
                 lines.append(f"# Dielectric layer: {r['name']}  z=[{z_bot:.4f}, {z_top:.4f}] mm")
 
@@ -2830,7 +3580,7 @@ class ViaWindow(QMainWindow):
             lines.append(")")
             lines.append(f"{vname}.material = {material_var}")
 
-            if r["is_copper"] and str(r.get("role", "Signal")) == "Plane":
+            if _is_reference_copper_row(r):
                 lines.append(f"_do_sig_clear = ({via_from_gi} < {gi} < {via_to_gi})")
                 lines.append(f"_do_stub_clear = ({stub_enabled} and {via_to_gi} < {gi} <= {stub_stack_idx})")
                 lines.append(f"if {gi} in plane_antipad_r_mm_by_layer and (_do_sig_clear or _do_stub_clear):")
@@ -2991,12 +3741,12 @@ class ViaWindow(QMainWindow):
             lines.append(f"trace_end = em.geo.add(trace_end, trace_port{script_port})")
         lines.append("")
         # Stitching vias
-        if self._stitch_enable.isChecked():
+        if self._stitch_enable.isChecked() and stitch_from_stack_idx >= 0 and stitch_to_stack_idx >= 0:
             stitch_coords = self._stitching_coordinates_mm()
             s_drill_r_mm = self._stitch_drill.value() / 2.0 / 1000.0
             s_pad_r_mm = self._stitch_pad.value() / 2.0 / 1000.0
-            s_from_gi = copper_info[stitch_from_idx_c][1] if stitch_from_idx_c < len(copper_info) else via_from_gi
-            s_to_gi   = copper_info[stitch_to_idx_c][1]   if stitch_to_idx_c   < len(copper_info) else via_to_gi
+            s_from_gi = stitch_from_stack_idx
+            s_to_gi = stitch_to_stack_idx
             z_s_top_mm = layer_z_mm[s_from_gi][0]
             z_s_bot_mm = layer_z_mm[s_to_gi][1]
             s_h_mm = z_s_top_mm - z_s_bot_mm
@@ -3052,19 +3802,20 @@ class ViaWindow(QMainWindow):
             lines.append("    _spad_to = em.geo.subtract(_spad_to, _spad_to_hole)")
             lines.append("    _stitch_conductors.append(_spad_to)")
             lines.append("")
-            lines.append("# Stitching barrel clearances on all crossed copper layers")
-            lines.append("# All layers (Plane and Signal): subtract drill-size cylinder so barrel fits flush.")
-            lines.append("# Plane layers -> barrel surface touches plane copper = electrically connected.")
-            lines.append("# Signal layers -> drill-hole only, no antipad, no intersection.")
+            lines.append("# Stitching barrel clearances on crossed reference copper layers")
+            lines.append("# Ground layers -> drill-size hole only so the stitching barrel is connected.")
+            lines.append("# Power layers -> antipad around the stitching barrel.")
             for gi, row in enumerate(stackup):
-                if not row.get("is_copper"):
+                if not _is_reference_copper_row(row):
                     continue
                 if not (s_from_gi < gi < s_to_gi):
                     continue
                 th_mm = row["thickness_um"] / 1000.0
                 z_bot_mm = layer_z_mm[gi][1]
-                role_label = str(row.get("role", "Signal")).strip()
-                lines.append(f"# Stitch barrel clearance on {role_label} layer {gi} ({row['name']})")
+                if _is_ground_copper_row(row):
+                    lines.append(f"# Stitch barrel clearance on ground layer {gi} ({row['name']})")
+                else:
+                    lines.append(f"# Stitch barrel clearance on power layer {gi} ({row['name']})")
                 lines.append(f"_layer_{gi}_stitch_cuts = []")
                 lines.append("for _si, (_sx, _sy) in enumerate(_stitch_coords):")
                 lines.append(f"    _sdh_name = f\"layer_{gi}_stitch_{{_si}}_drill_clear\"")
@@ -3072,6 +3823,8 @@ class ViaWindow(QMainWindow):
                 lines.append(f"    _sdh_height = {th_mm:.6f}*mm")
                 lines.append(f"    _sdh_cs = em.GCS.displace(_sx*mm, _sy*mm, {z_bot_mm:.6f}*mm)")
                 lines.append("    _sdh = em.geo.Cylinder(_sdh_radius, _sdh_height, cs=_sdh_cs, name=_sdh_name)")
+                lines.append("    if _sdh_name not in locals():")
+                lines.append("        pass")
                 lines.append(f"    _layer_{gi}_stitch_cuts.append(_sdh)")
                 lines.append(f"for _sdh in _layer_{gi}_stitch_cuts:")
                 lines.append(f"    layer_{gi} = em.geo.subtract(layer_{gi}, _sdh)")
@@ -3097,29 +3850,8 @@ class ViaWindow(QMainWindow):
             lines.append(f"    layer_{gi} = em.geo.subtract(layer_{gi}, _dh)")
             lines.append("")
 
-        lines.append("# -- Non-plane copper clearances for crossing vias -----------------------")
-        for gi, row in enumerate(stackup):
-            if not row.get("is_copper"):
-                continue
-            if gi in signal_gi_set:
-                continue
-            if str(row.get("role", "Signal")) == "Plane":
-                continue
-            z_top_mm, z_bot_mm = layer_z_mm[gi]
-            th_mm = row["thickness_um"] / 1000.0
-            lines.append(f"# Copper via clearances on layer {gi} ({row['name']})")
-            lines.append(f"_layer_{gi}_cu_cuts = []")
-            lines.append("for _hi, (_hx, _hy, _hr, _hz_bot, _hz_top) in enumerate(_diel_via_holes):")
-            lines.append(f"    if not (_hz_top <= {z_bot_mm:.6f}*mm or _hz_bot >= {z_top_mm:.6f}*mm):")
-            lines.append(f"        _ch_name = f\"layer_{gi}_cu_clear_{{_hi}}\"")
-            lines.append("        _ch_radius = _hr")
-            lines.append(f"        _ch_height = {th_mm:.6f}*mm")
-            lines.append(f"        _ch_cs = em.GCS.displace(_hx, _hy, {z_bot_mm:.6f}*mm)")
-            lines.append("        _ch = em.geo.Cylinder(_ch_radius, _ch_height, cs=_ch_cs, name=_ch_name)")
-            lines.append(f"        _layer_{gi}_cu_cuts.append(_ch)")
-            lines.append(f"for _ch in _layer_{gi}_cu_cuts:")
-            lines.append(f"    layer_{gi} = em.geo.subtract(layer_{gi}, _ch)")
-            lines.append("")
+        lines.append("# -- Copper via clearances are handled above for reference planes -------")
+        lines.append("")
 
         lines.append("# -- Conductor union ------------------------------------------------------")
         lines.append("_signal_conductor_parts = []")
@@ -3189,6 +3921,11 @@ class ViaWindow(QMainWindow):
         lines.append(f"mesh_div_feed = {mesh_div_feed}")
         lines.append(f"mesh_div_planes = {mesh_div_planes}")
         lines.append(f"mesh_div_stitching = {mesh_div_stitching}")
+        lines.append(f"curved_boundary_n = {curved_boundary_n}")
+        lines.append("try:")
+        lines.append("    model.mesher.set_curved_boundary_meshing(int(curved_boundary_n))")
+        lines.append("except Exception as _curved_err:")
+        lines.append("    print(f'Curved boundary meshing setting skipped: {_curved_err}')")
         lines.append("if mesh_local_enabled:")
         lines.append("    try:")
         lines.append(f"        _local_base = max(1e-6, {mesh_resolution:.6f}) * mm")
@@ -3209,9 +3946,9 @@ class ViaWindow(QMainWindow):
         for script_port in active_script_ports:
             lines.append(f"        m.mesher.set_boundary_size(port{script_port}_sheet, _ports_size)")
         for li, row in enumerate(stackup):
-            if row.get("is_copper") and str(row.get("role", "Signal")) == "Plane":
+            if row.get("is_copper") and (str(row.get("net", "")).strip().lower() in ("gnd", "ground") or str(row.get("role", "Signal")) == "Plane"):
                 lines.append(f"        m.mesher.set_boundary_size(layer_{li}, _plane_size)")
-        if self._stitch_enable.isChecked():
+        if self._stitch_enable.isChecked() and stitch_from_stack_idx >= 0 and stitch_to_stack_idx >= 0:
             lines.append("        _stitch_group = locals().get('stitch_group', None)")
             lines.append("        if _stitch_group is not None:")
             lines.append("            m.mesher.set_boundary_size(_stitch_group, _stitch_size)")
@@ -3362,6 +4099,7 @@ class ViaWindow(QMainWindow):
                 "f_stop_ghz":  self._f_stop.value(),
                 "n_pts":       self._n_pts.value(),
                 "resolution_mm": self._res_mm.value(),
+                "curved_boundary_n": self._curved_boundary_n.value(),
                 "mesh_local_enabled": self._mesh_local_enable.isChecked(),
                 "mesh_div_via": self._mesh_factor_sliders["via"].value(),
                 "mesh_div_ports": self._mesh_factor_sliders["ports"].value(),
@@ -3532,6 +4270,7 @@ class ViaWindow(QMainWindow):
         self._f_stop.setValue(    sim.get("f_stop_ghz",   10.0))
         self._n_pts.setValue(     sim.get("n_pts",        11))
         self._res_mm.setValue(    sim.get("resolution_mm", 0.25))
+        self._curved_boundary_n.setValue(int(sim.get("curved_boundary_n", 12)))
         self._mesh_local_enable.setChecked(sim.get("mesh_local_enabled", False))
         self._mesh_factor_sliders["via"].setValue(int(sim.get("mesh_div_via", 1)))
         self._mesh_factor_sliders["ports"].setValue(int(sim.get("mesh_div_ports", 1)))

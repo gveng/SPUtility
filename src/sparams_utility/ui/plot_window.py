@@ -10,6 +10,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QLineEdit,
     QHBoxLayout,
     QHeaderView,
@@ -64,6 +65,7 @@ class PlotWindow(QMainWindow):
         self._row_to_fid: List[str] = []            # row index -> file_id
         self._legend_offset = (10.0, 10.0)
         self._settings = PlotSettings()
+        self._s_plot_mode = "magnitude"  # magnitude | magnitude_phase
         self._marker_positions: List[float] = []
         self._marker_lines: List[pg.InfiniteLine] = []
 
@@ -99,6 +101,31 @@ class PlotWindow(QMainWindow):
 
         self._legend = self._plot_widget.addLegend(offset=self._legend_offset)
 
+        self._phase_plot_widget = pg.PlotWidget()
+        self._phase_plot_widget.setBackground("w")
+        self._phase_plot_widget.showGrid(x=True, y=True, alpha=0.25)
+        self._phase_plot_widget.setLabel("bottom", "Frequency", units="Hz")
+        self._phase_plot_widget.setLabel("left", "Phase", units="deg")
+        self._phase_plot_widget.getPlotItem().layout.setContentsMargins(8, 8, 8, 8)
+        phase_pi = self._phase_plot_widget.getPlotItem()
+        for side in ("bottom", "left", "top", "right"):
+            ax = phase_pi.getAxis(side)
+            ax.setPen(_AXIS_PEN)
+            ax.setTextPen(_AXIS_PEN)
+        phase_pi.getAxis("top").setStyle(showValues=False)
+        phase_pi.getAxis("right").setStyle(showValues=False)
+        phase_pi.showAxes(True, showValues=(True, False, False, True))
+        self._phase_plot_widget.setXLink(self._plot_widget)
+        self._phase_legend = self._phase_plot_widget.addLegend(offset=self._legend_offset)
+
+        self._plot_panel = QWidget()
+        self._plot_panel_layout = QVBoxLayout(self._plot_panel)
+        self._plot_panel_layout.setContentsMargins(0, 0, 0, 0)
+        self._plot_panel_layout.setSpacing(4)
+        self._plot_panel_layout.addWidget(self._plot_widget)
+        self._plot_panel_layout.addWidget(self._phase_plot_widget)
+        self._phase_plot_widget.hide()
+
         self._plot_widget.scene().sigMouseClicked.connect(self._on_plot_scene_clicked)
 
         # ── Selection table ───────────────────────────────────────────────
@@ -129,15 +156,21 @@ class PlotWindow(QMainWindow):
 
         self._plot_name_edit = QLineEdit(self._plot_name)
         self._plot_name_edit.textChanged.connect(self._on_plot_name_changed)
+        self._s_plot_mode_combo = QComboBox()
+        self._s_plot_mode_combo.addItem("Magnitude only", "magnitude")
+        self._s_plot_mode_combo.addItem("Magnitude + Phase", "magnitude_phase")
+        self._s_plot_mode_combo.currentIndexChanged.connect(self._on_s_plot_mode_changed)
         title_row = QHBoxLayout()
         title_row.setContentsMargins(6, 6, 6, 2)
         title_row.addWidget(QLabel("Plot name"))
         title_row.addWidget(self._plot_name_edit)
+        title_row.addWidget(QLabel("S-Plot"))
+        title_row.addWidget(self._s_plot_mode_combo)
 
         # ── Splitter: table top (30%), plot bottom (70%) ──────────────────
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self._selection_table)
-        splitter.addWidget(self._plot_widget)
+        splitter.addWidget(self._plot_panel)
         splitter.setSizes([240, 560])
         self._splitter = splitter
 
@@ -158,6 +191,12 @@ class PlotWindow(QMainWindow):
     def _on_plot_name_changed(self, value: str) -> None:
         self._plot_name = value.strip() or f"Plot #{self.window_number}"
         self._refresh_window_title()
+        self.project_modified.emit()
+
+    def _on_s_plot_mode_changed(self, *_args) -> None:
+        self._s_plot_mode = str(self._s_plot_mode_combo.currentData() or "magnitude")
+        self._phase_plot_widget.setVisible(self._s_plot_mode == "magnitude_phase")
+        self._refresh_plot()
         self.project_modified.emit()
 
     # ── Table population ──────────────────────────────────────────────────
@@ -331,10 +370,15 @@ class PlotWindow(QMainWindow):
 
     def _refresh_plot(self) -> None:
         self._legend_offset = self._get_legend_offset()
-        plot_item = self._plot_widget.getPlotItem()
-        plot_item.clear()
+        mag_item = self._plot_widget.getPlotItem()
+        phase_item = self._phase_plot_widget.getPlotItem()
+        mag_item.clear()
+        phase_item.clear()
         self._legend.clear()
-        plot_item.setLogMode(self._settings.x_log, self._settings.y_log)
+        self._phase_legend.clear()
+        mag_item.setLogMode(self._settings.x_log, self._settings.y_log)
+        phase_item.setLogMode(self._settings.x_log, False)
+        self._phase_plot_widget.setVisible(self._s_plot_mode == "magnitude_phase")
 
         color_index = 0
         for loaded in self._visible_loaded_files():
@@ -344,6 +388,18 @@ class PlotWindow(QMainWindow):
 
             legend_label = self._labels.get(loaded.file_id, loaded.display_name)
             frequencies = np.array(loaded.data.magnitude_table.frequencies_hz, dtype=float)
+            phase_by_trace: Dict[str, np.ndarray] = {}
+            if self._s_plot_mode == "magnitude_phase":
+                phase_acc: Dict[str, List[float]] = {t: [] for t in loaded.data.trace_names}
+                for point in loaded.data.points:
+                    for row in point.s_matrix:
+                        for cell in row:
+                            key = f"S{cell.row}{cell.col}"
+                            phase_acc.setdefault(key, []).append(float(np.degrees(np.angle(cell.complex_value))))
+                phase_by_trace = {
+                    t: np.array(vals, dtype=float)
+                    for t, vals in phase_acc.items()
+                }
 
             for trace in selected:
                 values = np.array(loaded.data.magnitude_table.traces_db[trace], dtype=float)
@@ -365,14 +421,36 @@ class PlotWindow(QMainWindow):
                 color = self._PLOT_COLORS[color_index % len(self._PLOT_COLORS)]
                 color_index += 1
                 curve_label = f"{legend_label} - {trace}"
-                plot_item.plot(
+                mag_item.plot(
                     x_data,
                     y_data,
                     name=curve_label,
                     pen=pg.mkPen(color=color, width=2),
                 )
 
+                if self._s_plot_mode == "magnitude_phase":
+                    phase_vals = phase_by_trace.get(trace)
+                    if phase_vals is not None and len(phase_vals) == len(frequencies):
+                        x_phase = frequencies.copy()
+                        y_phase = phase_vals.copy()
+                        if self._settings.x_log:
+                            mask = x_phase > 0
+                            x_phase, y_phase = x_phase[mask], y_phase[mask]
+                        finite = np.isfinite(y_phase)
+                        x_phase, y_phase = x_phase[finite], y_phase[finite]
+                        if len(x_phase) > 0:
+                            phase_item.plot(
+                                x_phase,
+                                y_phase,
+                                name=curve_label,
+                                pen=pg.mkPen(color=color, width=2),
+                            )
+
             self._set_legend_offset(self._legend_offset)
+            try:
+                self._phase_legend.setOffset(self._legend_offset)
+            except Exception:
+                pass
 
         self._rebuild_markers()
         self._apply_ranges()
@@ -487,20 +565,28 @@ class PlotWindow(QMainWindow):
 
     def _apply_ranges(self) -> None:
         vb = self._plot_widget.getPlotItem().vb
+        phase_vb = self._phase_plot_widget.getPlotItem().vb
 
         if self._settings.x_autorange and self._settings.y_autorange:
             self._plot_widget.autoRange()
+            if self._s_plot_mode == "magnitude_phase":
+                self._phase_plot_widget.autoRange()
             return
 
         if self._settings.x_autorange:
             vb.enableAutoRange(axis=vb.XAxis)
+            phase_vb.enableAutoRange(axis=phase_vb.XAxis)
         elif self._settings.x_min is not None and self._settings.x_max is not None:
             vb.setXRange(self._settings.x_min, self._settings.x_max, padding=0.0)
+            phase_vb.setXRange(self._settings.x_min, self._settings.x_max, padding=0.0)
 
         if self._settings.y_autorange:
             vb.enableAutoRange(axis=vb.YAxis)
         elif self._settings.y_min is not None and self._settings.y_max is not None:
             vb.setYRange(self._settings.y_min, self._settings.y_max, padding=0.0)
+
+        if self._s_plot_mode == "magnitude_phase":
+            phase_vb.enableAutoRange(axis=phase_vb.YAxis)
 
     def apply_project_state(self, state: dict) -> None:
         plot_name = str(state.get("plot_name", "")).strip()
@@ -527,6 +613,13 @@ class PlotWindow(QMainWindow):
             y_min=settings.get("y_min"),
             y_max=settings.get("y_max"),
         )
+
+        self._s_plot_mode = str(state.get("s_plot_mode", "magnitude"))
+        mode_idx = self._s_plot_mode_combo.findData(self._s_plot_mode)
+        self._s_plot_mode_combo.blockSignals(True)
+        self._s_plot_mode_combo.setCurrentIndex(mode_idx if mode_idx >= 0 else 0)
+        self._s_plot_mode_combo.blockSignals(False)
+        self._phase_plot_widget.setVisible(self._s_plot_mode == "magnitude_phase")
 
         loaded_by_path = {
             str(item.path.resolve()): item.file_id
@@ -600,6 +693,7 @@ class PlotWindow(QMainWindow):
         return {
             "window_title": self.windowTitle(),
             "plot_name": self._plot_name,
+            "s_plot_mode": self._s_plot_mode,
             "plot_settings": {
                 "x_log": self._settings.x_log,
                 "y_log": self._settings.y_log,
